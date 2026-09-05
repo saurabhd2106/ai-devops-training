@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars and adjust as needed:
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Do not commit terraform.tfvars (it is gitignored).
+
+aws_region   = "us-east-1"
+project_name = "deploy-s3"
+environment  = "development"
+
+# Optional: set an explicit globally unique bucket name.
+# Leave unset to use {project_name}-{environment}-{account_id}.
+# bucket_name = "my-company-deploy-s3-dev"
+
+# Optional
+# enable_versioning                 = true
+# encryption_type                   = "AES256"   # or "KMS"
+# kms_key                           = null
+# force_destroy                     = true
+# abort_incomplete_multipart_days   = 7

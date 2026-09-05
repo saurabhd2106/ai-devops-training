@@ -9,6 +9,104 @@ mvn package
 sonar-scanner
 ```
 
+## CI credentials and tool configuration
+
+Do this after Terraform (`deploy-vm`) and the Ansible installs (`install-sonarqube`, `install-jenkins`). Collect values once:
+
+```bash
+terraform -chdir=../deploy-vm output -json public_ips
+terraform -chdir=../deploy-vm output -json private_ips
+terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket
+```
+
+| Value | Where to use it |
+|-------|-----------------|
+| SonarQube **public** IP `:9000` | Browser, GitLab `SONAR_HOST_URL` (shared GitLab.com runners) |
+| SonarQube **private** IP `:9000` | Jenkins `SONAR_HOST_URL` and Jenkins SonarQube server URL |
+| `ci_artifacts_bucket` | Jenkins job parameter `S3_BUCKET` |
+
+### 1. Create a SonarQube token
+
+1. Open `http://<sonarqube-public-ip>:9000` and sign in (first login is **admin** / **admin**; change it).
+2. Click the avatar → **My Account** → **Security**.
+3. Under **Generate Tokens**, name it `ci-sample-java-app`, type **User Token**, then **Generate**.
+4. Copy the token once. You will paste the same value into GitLab and Jenkins.
+
+### 2. GitLab — CI/CD variables
+
+In the GitLab project: **Settings → CI/CD → Variables → Add variable**. Add each row. Mark tokens and keys **Masked** and **Hidden**; do not protect them unless every branch you scan is a protected branch.
+
+| Key | Value | Masked | Notes |
+|-----|-------|--------|-------|
+| `SONAR_HOST_URL` | `http://<sonarqube-public-ip>:9000` | No | Must be reachable from the GitLab runner. Use the public IP for GitLab.com runners. |
+| `SONAR_TOKEN` | token from step 1 | Yes | Required by [`.gitlab-ci.yml`](.gitlab-ci.yml) and [`sample-java-app.gitlab-ci.yml`](sample-java-app.gitlab-ci.yml) |
+| `SONAR_PROJECT_KEY` | `sonarqube-java-demo` | No | Optional; this is the default |
+| `AWS_ACCESS_KEY_ID` | IAM access key | Yes | Needed only if the runner has no instance profile and you publish to S3 or ECR |
+| `AWS_SECRET_ACCESS_KEY` | IAM secret key | Yes | Pair with the access key |
+| `AWS_DEFAULT_REGION` | `us-east-1` (or your region) | No | Same region as `deploy-vm` / `deploy-ecr` |
+| `S3_BUCKET` | `terraform output -raw ci_artifacts_bucket` | No | Optional; for an S3 publish job |
+
+IAM user or role used by GitLab needs `s3:ListBucket`, `s3:GetObject`, and `s3:PutObject` on the CI artefacts bucket (and ECR push if you use [`Jenkinsfile.sonarqube-java-demo`](Jenkinsfile.sonarqube-java-demo) style image publish).
+
+If this repo is the workspace root, set **Settings → CI/CD → General pipelines → CI/CD configuration file** to `sample-java-app/.gitlab-ci.yml`.
+
+### 3. Jenkins — credentials, tools, and SonarQube server
+
+Open `http://<jenkins-public-ip>:8080`.
+
+#### Credentials (Manage Jenkins → Credentials → System → Global credentials → Add credentials)
+
+**SonarQube token**
+
+1. Kind: **Secret text**
+2. Secret: paste the SonarQube token
+3. ID: `sonarqube-token` (must match this ID; [`Jenkinsfile`](Jenkinsfile) binds `credentials('sonarqube-token')`)
+4. Description: `SonarQube CI token`
+5. **Create**
+
+**AWS credentials** (optional on the lab Jenkins EC2 — that host already uses the instance profile from `deploy-vm`. Add these if Jenkins runs elsewhere, or you want an explicit key pair.)
+
+1. Kind: **AWS Credentials** (plugin `aws-credentials`, installed by `install-jenkins`)
+2. ID: `aws-ci`
+3. Access Key ID / Secret Access Key: IAM user that can write the CI artefacts bucket (and ECR if you publish images)
+4. Description: `AWS CI for sample-java-app`
+5. **Create**
+
+#### Tools (Manage Jenkins → Tools)
+
+These match the paths installed by [`install-jenkins`](../install-jenkins). Uncheck **Install automatically** and point at the local installs.
+
+| Tool | Name to enter | Home / path |
+|------|---------------|-------------|
+| JDK | `jdk-26` | `/usr/lib/jvm/java-26-amazon-corretto.x86_64` |
+| Maven | `maven-3.9` | `/opt/maven` |
+| SonarQube Scanner | `sonar-scanner` | `/opt/sonar-scanner` |
+
+Click **Save** at the bottom.
+
+The default [`Jenkinsfile`](Jenkinsfile) uses `PATH` (`/opt/maven/bin`, `/opt/sonar-scanner/bin`) rather than `tool` steps. Configuring Tools still lets you select them in freestyle jobs and in [`Jenkinsfile.sonarqube-java-demo`](Jenkinsfile.sonarqube-java-demo) if you switch to `tool` bindings.
+
+#### SonarQube server (Manage Jenkins → System → SonarQube servers)
+
+Required by [`Jenkinsfile.sonarqube-java-demo`](Jenkinsfile.sonarqube-java-demo) (`withSonarQubeEnv('sonarqube')`).
+
+1. Check **Environment variables** if shown.
+2. **Add SonarQube**
+3. Name: `sonarqube` (must match exactly)
+4. Server URL: `http://<sonarqube-private-ip>:9000`
+5. Server authentication token: credential **`sonarqube-token`**
+6. **Save**
+
+#### Pipeline job
+
+1. **New Item** → name `sample-java-app` → **Pipeline** → **OK**
+2. Check **This project is parameterized** after the first run (the Jenkinsfile defines `SONAR_HOST_URL` and `S3_BUCKET`).
+3. Pipeline → **Pipeline script from SCM** → your Git repo
+4. Script Path: `sample-java-app/Jenkinsfile` (monorepo) or `Jenkinsfile` (app-only checkout)
+5. **Save**, then **Build with Parameters**:
+   - `SONAR_HOST_URL` = `http://<sonarqube-private-ip>:9000`
+   - `S3_BUCKET` = `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`
+
 ## Jenkins CI pipeline
 
 Declarative pipeline: [`Jenkinsfile`](Jenkinsfile).
@@ -26,17 +124,16 @@ Declarative pipeline: [`Jenkinsfile`](Jenkinsfile).
 1. Apply Terraform in [`deploy-vm`](../deploy-vm) (creates VMs, CI S3 bucket, Jenkins→SonarQube:9000 SG rule).
 2. Install SonarQube with [`install-sonarqube`](../install-sonarqube).
 3. Install Jenkins + build tools with [`install-jenkins`](../install-jenkins) (JDK 26, Maven, sonar-scanner, plugins).
-4. In SonarQube UI: create a user token for project `sonarqube-java-demo`.
-5. In Jenkins UI:
-   - **Credentials** → add Secret text, ID = `sonarqube-token` (paste the SonarQube token).
-   - **New Item** → Pipeline → Pipeline script from SCM.
-   - Script Path: `sample-java-app/Jenkinsfile` (monorepo) or `Jenkinsfile` (app-only checkout).
-6. On first run, set parameters:
-   - `SONAR_HOST_URL` = `http://<sonarqube-private-ip>:9000`  
-     (`terraform -chdir=../deploy-vm output -json private_ips`)
-   - `S3_BUCKET` = value of `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`
+4. Add the GitLab variables and Jenkins credentials / tools from [CI credentials and tool configuration](#ci-credentials-and-tool-configuration).
 
 Artefacts land at:
 
 - Jenkins build archive: `target/sonarqube-java-demo-*.jar`, surefire XML
 - S3: `s3://<bucket>/sample-java-app/<BUILD_NUMBER>/`
+
+## GitLab CI pipeline
+
+- Workspace-root project: [`.gitlab-ci.yml`](.gitlab-ci.yml) — build, test, SonarQube, GitLab artefacts / Package Registry
+- App-only project: [`sample-java-app.gitlab-ci.yml`](sample-java-app.gitlab-ci.yml) — same flow, then Kaniko image push to the GitLab Container Registry
+
+Set `SONAR_HOST_URL` and `SONAR_TOKEN` (and AWS keys if the runner is not on an AWS instance role) using the GitLab steps above.

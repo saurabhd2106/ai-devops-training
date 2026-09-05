@@ -67,6 +67,10 @@ ansible-playbook site.yml -e sonarqube_update_packages=true
 1. Open `http://<sonarqube-public-ip>:9000` (from the CIDR allowed in `deploy-vm`).
 2. Sign in with **admin** / **admin** and change the password when prompted.
 3. Complete the first-run setup in the UI.
+4. Create a CI token for GitLab and Jenkins:
+   1. Avatar → **My Account** → **Security**
+   2. Generate a **User Token** named `ci-sample-java-app`
+   3. Copy it once, then add it as GitLab CI/CD variable `SONAR_TOKEN` and Jenkins credential `sonarqube-token` (see [`sample-java-app/README.md`](../sample-java-app/README.md#ci-credentials-and-tool-configuration))
 
 First start can take several minutes while Elasticsearch extracts; the playbook waits up to 300 seconds for port 9000.
 

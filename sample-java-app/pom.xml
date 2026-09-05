@@ -19,7 +19,7 @@
     <properties>
         <java.version>26</java.version>
         <maven.compiler.release>26</maven.compiler.release>
-        <jacoco.version>0.8.13</jacoco.version>
+        <jacoco.version>0.8.15</jacoco.version>
         <sonar-maven-plugin.version>5.1.0.4751</sonar-maven-plugin.version>
     </properties>
 

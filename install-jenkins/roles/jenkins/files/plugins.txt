@@ -3,6 +3,7 @@ git
 junit
 sonar
 credentials-binding
+aws-credentials
 timestamper
 ws-cleanup
 pipeline-stage-view

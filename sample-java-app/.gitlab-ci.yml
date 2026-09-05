@@ -1,9 +1,12 @@
 # GitLab CI for sonarqube-java-demo
-# Required CI/CD variables (Settings → CI/CD → Variables):
-#   SONAR_HOST_URL  — e.g. http://<sonarqube-host>:9000
-#   SONAR_TOKEN     — SonarQube user/project token (masked)
-# Optional:
-#   SONAR_PROJECT_KEY — defaults to sonarqube-java-demo
+# Settings → CI/CD → Variables (see sample-java-app/README.md):
+#   Required:
+#     SONAR_HOST_URL  — e.g. http://<sonarqube-public-ip>:9000
+#     SONAR_TOKEN     — SonarQube user token (masked + hidden)
+#   Optional:
+#     SONAR_PROJECT_KEY — defaults to sonarqube-java-demo
+#     AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION
+#     S3_BUCKET — terraform output ci_artifacts_bucket (S3 publish on runners without an instance profile)
 
 workflow:
   rules:

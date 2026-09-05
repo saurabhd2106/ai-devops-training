@@ -5,9 +5,12 @@
 #   - Project root is sample-java-app/: sample-java-app.gitlab-ci.yml
 #   - Workspace is project root:        sample-java-app/sample-java-app.gitlab-ci.yml
 #
-# Required CI/CD variables:
+# Required CI/CD variables (Settings → CI/CD → Variables; see README.md):
 #   SONAR_HOST_URL  — e.g. http://<sonarqube-public-ip>:9000
-#   SONAR_TOKEN     — SonarQube user token (masked)
+#   SONAR_TOKEN     — SonarQube user token (masked + hidden)
+# Optional (runners without an AWS instance profile):
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION
+#   S3_BUCKET — terraform output ci_artifacts_bucket
 
 stages:
   - build
