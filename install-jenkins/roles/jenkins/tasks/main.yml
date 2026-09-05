@@ -17,7 +17,7 @@
     state: latest
   when: jenkins_update_packages | bool
 
-- name: Install Java and fontconfig before Jenkins
+- name: Install Java, AWS CLI, and build prerequisites
   ansible.builtin.dnf:
     name: "{{ jenkins_packages }}"
     state: present
@@ -43,6 +43,79 @@
     state: present
   notify: Restart Jenkins
 
+- name: Ensure systemd drop-in directory exists for Jenkins
+  ansible.builtin.file:
+    path: /etc/systemd/system/jenkins.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Pin Jenkins service to Java 21
+  ansible.builtin.template:
+    src: jenkins-java21.conf.j2
+    dest: /etc/systemd/system/jenkins.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Jenkins
+
+- name: Download Apache Maven
+  ansible.builtin.get_url:
+    url: "{{ jenkins_maven_download_url }}"
+    dest: "/tmp/{{ jenkins_maven_tarball }}"
+    mode: "0644"
+
+- name: Extract Apache Maven
+  ansible.builtin.unarchive:
+    src: "/tmp/{{ jenkins_maven_tarball }}"
+    dest: "{{ jenkins_maven_install_root }}"
+    remote_src: true
+    creates: "{{ jenkins_maven_versioned_dir }}/bin/mvn"
+
+- name: Symlink Maven install to {{ jenkins_maven_home }}
+  ansible.builtin.file:
+    src: "{{ jenkins_maven_versioned_dir }}"
+    dest: "{{ jenkins_maven_home }}"
+    state: link
+    force: true
+
+- name: Install Maven profile.d script
+  ansible.builtin.template:
+    src: maven.sh.j2
+    dest: /etc/profile.d/maven.sh
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Download SonarScanner CLI
+  ansible.builtin.get_url:
+    url: "{{ jenkins_sonar_scanner_download_url }}"
+    dest: "/tmp/{{ jenkins_sonar_scanner_zip }}"
+    mode: "0644"
+
+- name: Extract SonarScanner CLI
+  ansible.builtin.unarchive:
+    src: "/tmp/{{ jenkins_sonar_scanner_zip }}"
+    dest: "{{ jenkins_sonar_scanner_install_root }}"
+    remote_src: true
+    creates: "{{ jenkins_sonar_scanner_versioned_dir }}/bin/sonar-scanner"
+
+- name: Symlink SonarScanner install to {{ jenkins_sonar_scanner_home }}
+  ansible.builtin.file:
+    src: "{{ jenkins_sonar_scanner_versioned_dir }}"
+    dest: "{{ jenkins_sonar_scanner_home }}"
+    state: link
+    force: true
+
+- name: Install SonarScanner profile.d script
+  ansible.builtin.template:
+    src: sonar-scanner.sh.j2
+    dest: /etc/profile.d/sonar-scanner.sh
+    owner: root
+    group: root
+    mode: "0644"
+
 - name: Flush handlers so Jenkins restarts before wait
   ansible.builtin.meta: flush_handlers
 
@@ -54,6 +127,54 @@
     daemon_reload: true
 
 - name: Wait for Jenkins HTTP port
+  ansible.builtin.wait_for:
+    port: "{{ jenkins_http_port }}"
+    host: 127.0.0.1
+    delay: "{{ jenkins_wait_delay }}"
+    timeout: "{{ jenkins_wait_timeout }}"
+    state: started
+
+- name: Download Jenkins plugin manager CLI
+  ansible.builtin.get_url:
+    url: "{{ jenkins_plugin_cli_download_url }}"
+    dest: "{{ jenkins_plugin_cli_jar }}"
+    mode: "0644"
+
+- name: Copy Jenkins plugins list
+  ansible.builtin.copy:
+    src: "{{ jenkins_plugins_file }}"
+    dest: /tmp/jenkins-plugins.txt
+    mode: "0644"
+
+- name: Install Jenkins plugins
+  ansible.builtin.command:
+    argv:
+      - "{{ jenkins_java_home }}/bin/java"
+      - -jar
+      - "{{ jenkins_plugin_cli_jar }}"
+      - --war
+      - /usr/share/java/jenkins.war
+      - --plugin-download-directory
+      - "{{ jenkins_home }}/plugins"
+      - --plugin-file
+      - /tmp/jenkins-plugins.txt
+      - --latest
+  register: jenkins_plugin_install
+  changed_when: "'No changes' not in (jenkins_plugin_install.stdout | default(''))"
+  notify: Restart Jenkins
+
+- name: Ensure jenkins owns plugin directory
+  ansible.builtin.file:
+    path: "{{ jenkins_home }}/plugins"
+    state: directory
+    owner: jenkins
+    group: jenkins
+    recurse: true
+
+- name: Flush handlers after plugin install
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for Jenkins HTTP port after plugins
   ansible.builtin.wait_for:
     port: "{{ jenkins_http_port }}"
     host: 127.0.0.1

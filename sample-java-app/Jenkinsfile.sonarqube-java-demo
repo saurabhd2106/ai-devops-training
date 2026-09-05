@@ -1,0 +1,166 @@
+// Declarative CI for sonarqube-java-demo.
+// Jenkins job Script Path: sample-java-app/Jenkinsfile.sonarqube-java-demo
+// (or Jenkinsfile.sonarqube-java-demo if the job roots at sample-java-app)
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        string(
+            name: 'AWS_REGION',
+            defaultValue: 'us-east-1',
+            description: 'AWS region for ECR'
+        )
+        string(
+            name: 'ECR_REPOSITORY',
+            defaultValue: 'deploy-ecr/sonarqube-java-demo',
+            description: 'ECR repository name (e.g. deploy-ecr/sonarqube-java-demo)'
+        )
+        string(
+            name: 'SONAR_HOST_URL',
+            defaultValue: '',
+            description: 'Optional SonarQube URL override; leave empty to use the Jenkins SonarQube server named sonarqube'
+        )
+    }
+
+    environment {
+        MAVEN_IMAGE = 'maven:3.9-eclipse-temurin-26'
+        IMAGE_NAME = 'sonarqube-java-demo'
+        JAR_NAME = 'sonarqube-java-demo-0.0.1-SNAPSHOT.jar'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    if (fileExists('pom.xml')) {
+                        env.APP_DIR = '.'
+                    } else if (fileExists('sample-java-app/pom.xml')) {
+                        env.APP_DIR = 'sample-java-app'
+                    } else {
+                        error 'Could not find pom.xml (expected sample-java-app or job rooted at that folder)'
+                    }
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                dir("${APP_DIR}") {
+                    sh '''
+                        docker run --rm \
+                          -v "$PWD":/workspace \
+                          -v "$HOME/.m2":/root/.m2 \
+                          -w /workspace \
+                          "$MAVEN_IMAGE" \
+                          mvn -B -DskipTests package
+                    '''
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                dir("${APP_DIR}") {
+                    sh '''
+                        docker run --rm \
+                          -v "$PWD":/workspace \
+                          -v "$HOME/.m2":/root/.m2 \
+                          -w /workspace \
+                          "$MAVEN_IMAGE" \
+                          mvn -B test jacoco:report
+                    '''
+                }
+            }
+            post {
+                always {
+                    dir("${APP_DIR}") {
+                        junit allowEmptyResults: true, testResults: 'target/surefire-reports/*.xml'
+                        archiveArtifacts artifacts: 'target/surefire-reports/**', allowEmptyArchive: true
+                        archiveArtifacts artifacts: 'target/site/jacoco/**', allowEmptyArchive: true
+                    }
+                }
+            }
+        }
+
+        stage('SonarQube') {
+            steps {
+                dir("${APP_DIR}") {
+                    script {
+                        def sonarArgs = ''
+                        if (params.SONAR_HOST_URL?.trim()) {
+                            sonarArgs = "-Dsonar.host.url=${params.SONAR_HOST_URL.trim()}"
+                        }
+                        withSonarQubeEnv('sonarqube') {
+                            sh """
+                                docker run --rm \
+                                  --network host \
+                                  -v "\$PWD":/workspace \
+                                  -v "\$HOME/.m2":/root/.m2 \
+                                  -e SONAR_HOST_URL \
+                                  -e SONAR_AUTH_TOKEN \
+                                  -e SONAR_TOKEN=\$SONAR_AUTH_TOKEN \
+                                  -w /workspace \
+                                  "\$MAVEN_IMAGE" \
+                                  mvn -B sonar:sonar \
+                                    -Dsonar.token=\$SONAR_AUTH_TOKEN \
+                                    ${sonarArgs}
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: false
+                }
+            }
+        }
+
+        stage('Publish') {
+            steps {
+                dir("${APP_DIR}") {
+                    script {
+                        def region = params.AWS_REGION.trim()
+                        def repo = params.ECR_REPOSITORY.trim()
+                        def accountId = sh(
+                            script: 'aws sts get-caller-identity --query Account --output text',
+                            returnStdout: true
+                        ).trim()
+                        def registry = "${accountId}.dkr.ecr.${region}.amazonaws.com"
+                        def imageTag = "${registry}/${repo}:${env.BUILD_NUMBER}"
+                        def imageLatest = "${registry}/${repo}:latest"
+
+                        sh """
+                            test -f target/${JAR_NAME}
+                            docker build -t ${IMAGE_NAME}:${env.BUILD_NUMBER} -t ${IMAGE_NAME}:latest .
+                            docker tag ${IMAGE_NAME}:${env.BUILD_NUMBER} ${imageTag}
+                            docker tag ${IMAGE_NAME}:latest ${imageLatest}
+                            aws ecr get-login-password --region ${region} | \
+                              docker login --username AWS --password-stdin ${registry}
+                            docker push ${imageTag}
+                            docker push ${imageLatest}
+                        """
+
+                        echo "Published ${imageTag} and ${imageLatest}"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs(deleteDirs: true, notFailBuild: true)
+        }
+    }
+}

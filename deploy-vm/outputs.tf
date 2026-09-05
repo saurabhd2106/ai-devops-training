@@ -60,3 +60,13 @@ output "instances" {
     }
   }
 }
+
+output "ci_artifacts_bucket" {
+  description = "S3 bucket name for Jenkins CI artefacts (sample-java-app JAR and test reports)"
+  value       = aws_s3_bucket.ci_artifacts.bucket
+}
+
+output "ci_artifacts_bucket_arn" {
+  description = "ARN of the CI artefacts S3 bucket"
+  value       = aws_s3_bucket.ci_artifacts.arn
+}

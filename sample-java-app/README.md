@@ -1,24 +1,42 @@
 # sonarqube-java-demo
 
-Build: `mvn package`
+Maven Spring Boot demo for SonarQube training (intentional code-quality issues and one failing test).
 
-Scan: `sonar-scanner`
+## Local build and scan
 
-## GitLab CI
+```bash
+mvn package
+sonar-scanner
+```
 
-Pipeline (`.gitlab-ci.yml`): **build → test → SonarQube scan → publish**.
+## Jenkins CI pipeline
 
-Set these CI/CD variables in the GitLab project (**Settings → CI/CD → Variables**):
+Declarative pipeline: [`Jenkinsfile`](Jenkinsfile).
 
-| Variable | Required | Example |
-|---|---|---|
-| `SONAR_HOST_URL` | Yes (for scan) | `http://<sonarqube-ip>:9000` |
-| `SONAR_TOKEN` | Yes (for scan) | SonarQube user or project token (masked) |
-| `SONAR_PROJECT_KEY` | No | Defaults to `sonarqube-java-demo` |
+| Stage | What it does |
+|-------|----------------|
+| Checkout | SCM checkout; resolves `sample-java-app/` vs app-only root |
+| Build | `mvn -B -DskipTests compile` |
+| Test | `mvn -B test` + JUnit report publish (Surefire ignores failures for training) |
+| SonarQube Scan | `mvn package` then `sonar-scanner` (no quality-gate wait) |
+| Publish artefacts | Jenkins `archiveArtifacts` + upload JAR/reports to S3 |
 
-The GitLab runner must be able to reach SonarQube on port 9000.
+### Prerequisites (lab)
 
-**Publish** (default branch and tags only):
+1. Apply Terraform in [`deploy-vm`](../deploy-vm) (creates VMs, CI S3 bucket, Jenkins→SonarQube:9000 SG rule).
+2. Install SonarQube with [`install-sonarqube`](../install-sonarqube).
+3. Install Jenkins + build tools with [`install-jenkins`](../install-jenkins) (JDK 26, Maven, sonar-scanner, plugins).
+4. In SonarQube UI: create a user token for project `sonarqube-java-demo`.
+5. In Jenkins UI:
+   - **Credentials** → add Secret text, ID = `sonarqube-token` (paste the SonarQube token).
+   - **New Item** → Pipeline → Pipeline script from SCM.
+   - Script Path: `sample-java-app/Jenkinsfile` (monorepo) or `Jenkinsfile` (app-only checkout).
+6. On first run, set parameters:
+   - `SONAR_HOST_URL` = `http://<sonarqube-private-ip>:9000`  
+     (`terraform -chdir=../deploy-vm output -json private_ips`)
+   - `S3_BUCKET` = value of `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`
 
-- Job artifacts: fat JAR under `artifacts/` (kept 30 days)
-- GitLab Package Registry: Maven deploy of `com.demo:sonarqube-java-demo`
+Artefacts land at:
+
+- Jenkins build archive: `target/sonarqube-java-demo-*.jar`, surefire XML
+- S3: `s3://<bucket>/sample-java-app/<BUILD_NUMBER>/`

@@ -1,9 +1,17 @@
 ---
 jenkins_http_port: 8080
 jenkins_java_package: java-21-amazon-corretto
+jenkins_java_home: /usr/lib/jvm/java-21-amazon-corretto.x86_64
+jenkins_build_java_package: java-26-amazon-corretto-devel
+jenkins_build_java_home: /usr/lib/jvm/java-26-amazon-corretto.x86_64
 jenkins_packages:
   - fontconfig
+  - git
+  - unzip
+  - tar
+  - awscli-2
   - "{{ jenkins_java_package }}"
+  - "{{ jenkins_build_java_package }}"
 jenkins_repo_name: jenkins
 jenkins_repo_description: Jenkins LTS
 jenkins_repo_baseurl: https://pkg.jenkins.io/rpm-stable
@@ -15,3 +23,24 @@ jenkins_home: /var/lib/jenkins
 jenkins_initial_admin_password_path: /var/lib/jenkins/secrets/initialAdminPassword
 jenkins_wait_timeout: 180
 jenkins_wait_delay: 5
+
+# Maven (build agent tools; Jenkins JVM stays on Java 21)
+jenkins_maven_version: "3.9.9"
+jenkins_maven_install_root: /opt
+jenkins_maven_home: "{{ jenkins_maven_install_root }}/maven"
+jenkins_maven_versioned_dir: "{{ jenkins_maven_install_root }}/apache-maven-{{ jenkins_maven_version }}"
+jenkins_maven_tarball: "apache-maven-{{ jenkins_maven_version }}-bin.tar.gz"
+jenkins_maven_download_url: "https://archive.apache.org/dist/maven/maven-3/{{ jenkins_maven_version }}/binaries/{{ jenkins_maven_tarball }}"
+
+# SonarScanner CLI
+jenkins_sonar_scanner_version: "7.0.2.4839"
+jenkins_sonar_scanner_install_root: /opt
+jenkins_sonar_scanner_home: "{{ jenkins_sonar_scanner_install_root }}/sonar-scanner"
+jenkins_sonar_scanner_versioned_dir: "{{ jenkins_sonar_scanner_install_root }}/sonar-scanner-{{ jenkins_sonar_scanner_version }}-linux-x64"
+jenkins_sonar_scanner_zip: "sonar-scanner-cli-{{ jenkins_sonar_scanner_version }}-linux-x64.zip"
+jenkins_sonar_scanner_download_url: "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/{{ jenkins_sonar_scanner_zip }}"
+
+# Plugins installed via jenkins-plugin-cli after first start
+jenkins_plugins_file: plugins.txt
+jenkins_plugin_cli_jar: /usr/share/java/jenkins-plugin-manager.jar
+jenkins_plugin_cli_download_url: "https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.13.2/jenkins-plugin-manager-2.13.2.jar"

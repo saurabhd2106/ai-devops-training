@@ -61,6 +61,23 @@ resource "aws_vpc_security_group_egress_rule" "all" {
   }
 }
 
+# Allow Jenkins to reach SonarQube on port 9000 within the VPC (CI scan stage).
+resource "aws_vpc_security_group_ingress_rule" "sonarqube_from_jenkins" {
+  count = contains(keys(local.vms), "sonarqube") && contains(keys(local.vms), "jenkins") ? 1 : 0
+
+  security_group_id            = aws_security_group.instance["sonarqube"].id
+  description                  = "SonarQube from Jenkins SG for CI scans"
+  ip_protocol                  = "tcp"
+  from_port                    = 9000
+  to_port                      = 9000
+  referenced_security_group_id = aws_security_group.instance["jenkins"].id
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-sonarqube-from-jenkins"
+    Role = "sonarqube"
+  }
+}
+
 data "aws_iam_policy_document" "ec2_assume_role" {
   statement {
     effect = "Allow"

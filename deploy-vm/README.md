@@ -1,22 +1,24 @@
 # deploy-vm — Terraform multi-role EC2 provisioning
 
-Provisions named Amazon EC2 VMs (app, SonarQube, Jenkins by default) in a dedicated public VPC using the **HashiCorp AWS provider `~> 6.62`**, with per-VM instance types, disk sizes, and ingress ports.
+Provisions named Amazon EC2 VMs (app, SonarQube, Jenkins by default) in a dedicated public VPC using the **HashiCorp AWS provider `~> 6.62`**, with per-VM instance types, disk sizes, and ingress ports. Also creates a private **CI artefacts S3 bucket** and allows Jenkins to reach SonarQube for scans.
 
 ## Architecture
 
 - Dedicated VPC (`10.0.0.0/16`) with one public subnet and an Internet Gateway
 - One EC2 instance per entry in the `vms` map (Amazon Linux 2023 via SSM Parameter Store)
-- Shared SSH key pair and IAM instance profile (SSM Session Manager)
+- Shared SSH key pair and IAM instance profile (SSM Session Manager + CI S3 access)
 - Per-VM security group: TCP/22 plus role `ingress_ports`, all from `allowed_ssh_cidr` only
+- Extra ingress: **Jenkins SG → SonarQube SG on TCP 9000** (when both roles are enabled) so CI can run SonarScanner
+- Private S3 bucket for Jenkins artefact uploads (SSE-S3, all public access blocked)
 - Encrypted gp3 root volume, IMDSv2 required
 
 | Role | Default type | Root disk | Ports (from allowed CIDR) |
 |------|--------------|-----------|---------------------------|
 | `app` | `t3.small` | 30 GiB | 22, 80, 443 |
-| `sonarqube` | `t3.medium` | 50 GiB | 22, 9000 |
+| `sonarqube` | `t3.medium` | 50 GiB | 22, 9000 (+ 9000 from Jenkins SG) |
 | `jenkins` | `t3.medium` | 40 GiB | 22, 8080 |
 
-Terraform does **not** install Jenkins, SonarQube, or your app — only the VMs and network. Install Jenkins after connect with sibling [`install-jenkins`](../install-jenkins/README.md). Install SonarQube with sibling [`install-sonarqube`](../install-sonarqube/README.md).
+Terraform does **not** install Jenkins, SonarQube, or your app — only the VMs, network, and CI S3/IAM. Install Jenkins after connect with sibling [`install-jenkins`](../install-jenkins/README.md). Install SonarQube with sibling [`install-sonarqube`](../install-sonarqube/README.md). Pipeline for the Java demo: [`sample-java-app/Jenkinsfile`](../sample-java-app/Jenkinsfile).
 
 ## Prerequisites
 
@@ -77,7 +79,11 @@ Add more roles by adding keys to the map (e.g. `monitoring = { instance_type = "
 terraform output instances
 terraform output ssh_commands
 terraform output public_ips
+terraform output private_ips
+terraform output -raw ci_artifacts_bucket
 ```
+
+Use `private_ips.sonarqube` as `SONAR_HOST_URL` (`http://<ip>:9000`) and `ci_artifacts_bucket` as the Jenkins `S3_BUCKET` parameter for [`sample-java-app`](../sample-java-app).
 
 Example SSH (Amazon Linux 2023 user is `ec2-user`):
 
@@ -146,6 +152,15 @@ checkov -d .
 ## Optional remote state
 
 Local state is used by default. Uncomment and configure the S3 backend in `versions.tf` for team use.
+
+## CI artefacts (S3)
+
+| Output | Use |
+|--------|-----|
+| `ci_artifacts_bucket` | Jenkins pipeline parameter `S3_BUCKET` |
+| `ci_artifacts_bucket_arn` | IAM / debugging |
+
+Bucket name pattern: `{project_name}-{environment}-ci-artifacts-{account_id}`. Objects are written by Jenkins via the shared instance role (`s3:ListBucket`, `s3:GetObject`, `s3:PutObject` on that bucket).
 
 ## Out of scope
 
