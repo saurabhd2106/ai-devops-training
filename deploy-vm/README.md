@@ -1,0 +1,155 @@
+# deploy-vm — Terraform multi-role EC2 provisioning
+
+Provisions named Amazon EC2 VMs (app, SonarQube, Jenkins by default) in a dedicated public VPC using the **HashiCorp AWS provider `~> 6.62`**, with per-VM instance types, disk sizes, and ingress ports.
+
+## Architecture
+
+- Dedicated VPC (`10.0.0.0/16`) with one public subnet and an Internet Gateway
+- One EC2 instance per entry in the `vms` map (Amazon Linux 2023 via SSM Parameter Store)
+- Shared SSH key pair and IAM instance profile (SSM Session Manager)
+- Per-VM security group: TCP/22 plus role `ingress_ports`, all from `allowed_ssh_cidr` only
+- Encrypted gp3 root volume, IMDSv2 required
+
+| Role | Default type | Root disk | Ports (from allowed CIDR) |
+|------|--------------|-----------|---------------------------|
+| `app` | `t3.small` | 30 GiB | 22, 80, 443 |
+| `sonarqube` | `t3.medium` | 50 GiB | 22, 9000 |
+| `jenkins` | `t3.medium` | 40 GiB | 22, 8080 |
+
+Terraform does **not** install Jenkins, SonarQube, or your app — only the VMs and network. Install Jenkins after connect with sibling [`install-jenkins`](../install-jenkins/README.md). Install SonarQube with sibling [`install-sonarqube`](../install-sonarqube/README.md).
+
+## Prerequisites
+
+- [Terraform](https://developer.hashicorp.com/terraform/install) `>= 1.5.7`
+- AWS credentials configured (`AWS_PROFILE`, env keys, or SSO)
+- An OpenSSH public key (e.g. `~/.ssh/id_ed25519.pub`)
+- Your current public IP (for the access CIDR)
+
+```bash
+curl -s ifconfig.me
+```
+
+## Quick start
+
+```bash
+cd deploy-vm
+
+cp terraform.tfvars.example terraform.tfvars
+# Set allowed_ssh_cidr and ssh_public_key; adjust vms{} types/sizes as needed
+
+# Or inject via env:
+#   export TF_VAR_ssh_public_key="$(cat ~/.ssh/id_ed25519.pub)"
+#   export TF_VAR_allowed_ssh_cidr="$(curl -s ifconfig.me)/32"
+
+terraform init
+terraform plan
+terraform apply
+```
+
+### Customize machine types and sizes
+
+```hcl
+vms = {
+  app = {
+    instance_type    = "t3.large"
+    root_volume_size = 50
+    ingress_ports    = [80, 443]
+  }
+  sonarqube = {
+    instance_type    = "t3.xlarge"
+    root_volume_size = 100
+    ingress_ports    = [9000]
+  }
+  jenkins = {
+    instance_type    = "t3.medium"
+    root_volume_size = 40
+    ingress_ports    = [8080]
+    enabled          = false   # skip this VM
+  }
+}
+```
+
+Add more roles by adding keys to the map (e.g. `monitoring = { instance_type = "t3.micro", ingress_ports = [3000] }`).
+
+## Connect
+
+```bash
+terraform output instances
+terraform output ssh_commands
+terraform output public_ips
+```
+
+Example SSH (Amazon Linux 2023 user is `ec2-user`):
+
+```bash
+ssh -i ~/.ssh/id_ed25519 ec2-user@<app-public-ip>
+```
+
+UI endpoints (from your allowed CIDR):
+
+- App: `http://<app-ip>/` or `https://<app-ip>/`
+- SonarQube: `http://<sonarqube-ip>:9000` — install software with [`install-sonarqube`](../install-sonarqube/README.md)
+- Jenkins: `http://<jenkins-ip>:8080` — install software with [`install-jenkins`](../install-jenkins/README.md)
+
+SSM backup access:
+
+```bash
+aws ssm start-session --target <instance-id> --region us-east-1
+```
+
+## Destroy
+
+```bash
+terraform destroy
+```
+
+## Variables
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `allowed_ssh_cidr` | **yes** | — | CIDR for SSH + role ports (`/32` recommended). `0.0.0.0/0` rejected. |
+| `ssh_public_key` | **yes** | — | OpenSSH public key material |
+| `vms` | no | app / sonarqube / jenkins map | Per-VM `instance_type`, `root_volume_size`, `ingress_ports`, `enabled` |
+| `aws_region` | no | `us-east-1` | AWS region |
+| `project_name` | no | `deploy-vm` | Tag / name prefix |
+| `environment` | no | `development` | `development` \| `staging` \| `production` \| `testing` |
+| `key_name` | no | `deploy-vm-key` | Key pair name prefix |
+| `enable_detailed_monitoring` | no | `false` | 1-minute CloudWatch metrics (extra cost) |
+
+## Security defaults
+
+- SSH and app/UI ports restricted to `allowed_ssh_cidr`
+- EBS root: **gp3**, **encrypted**, delete on termination
+- **IMDSv2 required**, hop limit `1`
+- Shared IAM with `AmazonSSMManagedInstanceCore`
+- AMI pinned after first apply (`lifecycle.ignore_changes = [ami]`)
+
+## Estimated monthly cost (us-east-1, On-Demand, 24/7)
+
+Approximate list prices for **default** three-VM layout:
+
+| VM | Compute (approx) | gp3 | Public IPv4 | Subtotal |
+|----|------------------|-----|-------------|----------|
+| app (`t3.small`, 30 GiB) | ~$15.18 | ~$2.40 | ~$3.65 | ~$21 |
+| sonarqube (`t3.medium`, 50 GiB) | ~$30.37 | ~$4.00 | ~$3.65 | ~$38 |
+| jenkins (`t3.medium`, 40 GiB) | ~$30.37 | ~$3.20 | ~$3.65 | ~$37 |
+| **Total (all three)** | | | | **~$80–96/month** |
+
+Assumptions: continuous uptime, basic monitoring, no NAT Gateway, negligible data transfer. Disable a role with `enabled = false`, or stop instances when idle.
+
+Optional pre-apply scan:
+
+```bash
+checkov -d .
+```
+
+## Optional remote state
+
+Local state is used by default. Uncomment and configure the S3 backend in `versions.tf` for team use.
+
+## Out of scope
+
+- Installing Jenkins (use sibling [`install-jenkins`](../install-jenkins/README.md)), SonarQube (use sibling [`install-sonarqube`](../install-sonarqube/README.md)), or application software
+- NAT Gateway / private subnets
+- Auto Scaling, ALB, Elastic IPs
+- Automated `terraform apply` from CI

@@ -1,0 +1,49 @@
+# Copy to terraform.tfvars and fill in required values:
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Do not commit terraform.tfvars (it is gitignored).
+
+aws_region   = "us-east-1"
+project_name = "deploy-ecs"
+environment  = "development"
+
+# Map of ECS Fargate services. Set enabled = false to skip a service.
+services = {
+  app = {
+    image             = "public.ecr.aws/docker/library/nginx:stable"
+    cpu               = 512
+    memory            = 1024
+    container_port    = 80
+    desired_count     = 1
+    path_pattern      = "/*"
+    listener_priority = 100
+    create_ecr        = true
+    health_check_path = "/"
+    # enabled         = true
+  }
+  # Example second service (path-based routing on the same ALB):
+  # api = {
+  #   image             = "public.ecr.aws/docker/library/httpd:2.4"
+  #   cpu               = 256
+  #   memory            = 512
+  #   container_port    = 80
+  #   desired_count     = 1
+  #   path_pattern      = "/api*"
+  #   listener_priority = 50
+  #   create_ecr        = true
+  #   health_check_path = "/"
+  # }
+}
+
+# REQUIRED: your public IP as /32 (find with: curl -s ifconfig.me)
+# Used for ALB HTTP/HTTPS ingress. Use 0.0.0.0/0 only for a public demo.
+allowed_ingress_cidr = "203.0.113.25/32"
+
+# Optional: ACM certificate ARN in this region enables HTTPS :443 + HTTP→HTTPS redirect
+# acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Optional
+# enable_container_insights = false
+# vpc_cidr                  = "10.0.0.0/16"
+# public_subnet_cidrs       = ["10.0.1.0/24", "10.0.2.0/24"]
+# private_subnet_cidrs      = ["10.0.11.0/24", "10.0.12.0/24"]

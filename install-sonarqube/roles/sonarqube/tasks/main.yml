@@ -1,0 +1,179 @@
+---
+- name: Assert target is Amazon Linux 2023 (RedHat family)
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == "RedHat"
+      - ansible_distribution == "Amazon"
+      - ansible_distribution_major_version | int == 2023
+    fail_msg: >-
+      This role supports Amazon Linux 2023 only
+      (got {{ ansible_distribution }} {{ ansible_distribution_version }},
+      os_family={{ ansible_os_family }}).
+    success_msg: "Target OS is Amazon Linux 2023."
+
+- name: Update all packages
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+  when: sonarqube_update_packages | bool
+
+- name: Install SonarQube prerequisites
+  ansible.builtin.dnf:
+    name: "{{ sonarqube_packages }}"
+    state: present
+
+- name: Create SonarQube group
+  ansible.builtin.group:
+    name: "{{ sonarqube_group }}"
+    system: true
+    state: present
+
+- name: Create SonarQube user
+  ansible.builtin.user:
+    name: "{{ sonarqube_user }}"
+    group: "{{ sonarqube_group }}"
+    system: true
+    create_home: false
+    shell: /sbin/nologin
+    home: "{{ sonarqube_home }}"
+    state: present
+
+- name: Persist Elasticsearch sysctl settings
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-sonarqube.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      vm.max_map_count={{ sonarqube_vm_max_map_count }}
+      fs.file-max={{ sonarqube_fs_file_max }}
+
+- name: Apply Elasticsearch sysctl settings
+  ansible.builtin.command:
+    cmd: sysctl --system
+  changed_when: false
+
+- name: Configure SonarQube process limits
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/sonarqube.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {{ sonarqube_user }} - nofile {{ sonarqube_nofile_limit }}
+      {{ sonarqube_user }} - nproc {{ sonarqube_nproc_limit }}
+
+- name: Download SonarQube distribution
+  ansible.builtin.get_url:
+    url: "{{ sonarqube_download_url }}"
+    dest: "{{ sonarqube_zip_path }}"
+    mode: "0644"
+    timeout: 300
+
+- name: Extract SonarQube distribution
+  ansible.builtin.unarchive:
+    src: "{{ sonarqube_zip_path }}"
+    dest: "{{ sonarqube_install_root }}"
+    remote_src: true
+    creates: "{{ sonarqube_versioned_dir }}/bin/linux-x86-64/sonar.sh"
+    owner: "{{ sonarqube_user }}"
+    group: "{{ sonarqube_group }}"
+
+- name: Symlink SonarQube home to versioned install
+  ansible.builtin.file:
+    src: "{{ sonarqube_versioned_dir }}"
+    dest: "{{ sonarqube_home }}"
+    state: link
+    force: true
+    owner: "{{ sonarqube_user }}"
+    group: "{{ sonarqube_group }}"
+  notify: Restart SonarQube
+
+- name: Ensure SonarQube directories are owned by sonarqube
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ sonarqube_user }}"
+    group: "{{ sonarqube_group }}"
+    recurse: true
+  loop:
+    - "{{ sonarqube_versioned_dir }}"
+
+- name: Configure sonar.web.port
+  ansible.builtin.lineinfile:
+    path: "{{ sonarqube_home }}/conf/sonar.properties"
+    regexp: '^#?sonar\.web\.port='
+    line: "sonar.web.port={{ sonarqube_http_port }}"
+    owner: "{{ sonarqube_user }}"
+    group: "{{ sonarqube_group }}"
+  notify: Restart SonarQube
+
+- name: Configure sonar.web.host
+  ansible.builtin.lineinfile:
+    path: "{{ sonarqube_home }}/conf/sonar.properties"
+    regexp: '^#?sonar\.web\.host='
+    line: "sonar.web.host={{ sonarqube_web_host }}"
+    owner: "{{ sonarqube_user }}"
+    group: "{{ sonarqube_group }}"
+  notify: Restart SonarQube
+
+- name: Configure sonar.search.javaOpts
+  ansible.builtin.lineinfile:
+    path: "{{ sonarqube_home }}/conf/sonar.properties"
+    regexp: '^#?sonar\.search\.javaOpts='
+    line: "sonar.search.javaOpts={{ sonarqube_search_java_opts }}"
+    owner: "{{ sonarqube_user }}"
+    group: "{{ sonarqube_group }}"
+  notify: Restart SonarQube
+
+- name: Configure sonar.web.javaOpts
+  ansible.builtin.lineinfile:
+    path: "{{ sonarqube_home }}/conf/sonar.properties"
+    regexp: '^#?sonar\.web\.javaOpts='
+    line: "sonar.web.javaOpts={{ sonarqube_web_java_opts }}"
+    owner: "{{ sonarqube_user }}"
+    group: "{{ sonarqube_group }}"
+  notify: Restart SonarQube
+
+- name: Configure sonar.ce.javaOpts
+  ansible.builtin.lineinfile:
+    path: "{{ sonarqube_home }}/conf/sonar.properties"
+    regexp: '^#?sonar\.ce\.javaOpts='
+    line: "sonar.ce.javaOpts={{ sonarqube_ce_java_opts }}"
+    owner: "{{ sonarqube_user }}"
+    group: "{{ sonarqube_group }}"
+  notify: Restart SonarQube
+
+- name: Install SonarQube systemd unit
+  ansible.builtin.template:
+    src: sonarqube.service.j2
+    dest: /etc/systemd/system/{{ sonarqube_service_name }}.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart SonarQube
+
+- name: Flush handlers so SonarQube restarts before wait
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start SonarQube service
+  ansible.builtin.systemd:
+    name: "{{ sonarqube_service_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for SonarQube HTTP port
+  ansible.builtin.wait_for:
+    port: "{{ sonarqube_http_port }}"
+    host: 127.0.0.1
+    delay: "{{ sonarqube_wait_delay }}"
+    timeout: "{{ sonarqube_wait_timeout }}"
+    state: started
+
+- name: Display SonarQube URL and default credentials
+  ansible.builtin.debug:
+    msg: >-
+      SonarQube is running. Open http://{{ ansible_host | default(inventory_hostname) }}:{{ sonarqube_http_port }}
+      and sign in with admin / admin (change the password on first login).
+      Embedded H2 is for evaluation only; use PostgreSQL for production.

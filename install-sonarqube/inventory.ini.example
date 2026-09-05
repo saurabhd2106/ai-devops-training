@@ -1,0 +1,10 @@
+# Copy to inventory.ini and set the SonarQube EC2 public IP.
+# Get the IP from deploy-vm:
+#   terraform -chdir=../deploy-vm output -json public_ips
+#
+# Example:
+#   [sonarqube]
+#   203.0.113.10 ansible_user=ec2-user ansible_ssh_private_key_file=~/.ssh/id_ed25519
+
+[sonarqube]
+<sonarqube-public-ip> ansible_user=ec2-user ansible_ssh_private_key_file=~/.ssh/id_ed25519

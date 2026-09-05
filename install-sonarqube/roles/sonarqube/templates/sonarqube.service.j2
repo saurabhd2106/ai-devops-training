@@ -1,0 +1,19 @@
+[Unit]
+Description=SonarQube service
+After=syslog.target network.target
+
+[Service]
+Type=simple
+User={{ sonarqube_user }}
+Group={{ sonarqube_group }}
+PermissionsStartOnly=true
+ExecStart=/bin/nohup {{ sonarqube_java_bin }} -Xms32m -Xmx32m -Djava.net.preferIPv4Stack=true -jar {{ sonarqube_application_jar }}
+StandardOutput=journal
+LimitNOFILE={{ sonarqube_nofile_limit }}
+LimitNPROC={{ sonarqube_nproc_limit }}
+TimeoutStartSec=5
+Restart=always
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target

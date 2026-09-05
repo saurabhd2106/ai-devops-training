@@ -1,0 +1,7 @@
+---
+# Install SonarQube Community Build on the deploy-vm SonarQube EC2 (Amazon Linux 2023).
+- name: Install SonarQube
+  hosts: sonarqube
+  become: true
+  roles:
+    - role: sonarqube

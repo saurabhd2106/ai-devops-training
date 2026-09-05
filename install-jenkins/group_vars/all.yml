@@ -1,0 +1,4 @@
+---
+# Override role defaults here if needed.
+# jenkins_http_port: 8080
+# jenkins_update_packages: false

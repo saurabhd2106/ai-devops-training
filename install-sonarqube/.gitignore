@@ -1,0 +1,4 @@
+# Host-specific inventory (copy from inventory.ini.example)
+inventory.ini
+.retry
+*.retry

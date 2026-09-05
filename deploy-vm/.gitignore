@@ -1,0 +1,27 @@
+# Local Terraform state and plugins
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Keep .terraform.lock.hcl in version control
+
+# Variable files with secrets / personal values
+*.tfvars
+!terraform.tfvars.example
+*.tfvars.json
+
+# SSH private keys (never commit)
+*.pem
+*.key
+id_rsa
+id_ed25519
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store

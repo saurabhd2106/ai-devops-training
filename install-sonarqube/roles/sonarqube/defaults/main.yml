@@ -1,0 +1,37 @@
+---
+sonarqube_version: "26.8.0.126808"
+sonarqube_download_url: "https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-{{ sonarqube_version }}.zip"
+sonarqube_install_root: /opt
+sonarqube_home: "{{ sonarqube_install_root }}/sonarqube"
+sonarqube_versioned_dir: "{{ sonarqube_install_root }}/sonarqube-{{ sonarqube_version }}"
+sonarqube_zip_path: "{{ sonarqube_install_root }}/sonarqube-{{ sonarqube_version }}.zip"
+sonarqube_application_jar: "{{ sonarqube_home }}/lib/sonar-application-{{ sonarqube_version }}.jar"
+
+sonarqube_http_port: 9000
+sonarqube_web_host: "0.0.0.0"
+
+sonarqube_user: sonarqube
+sonarqube_group: sonarqube
+
+sonarqube_java_package: java-21-amazon-corretto-devel
+sonarqube_java_bin: /usr/lib/jvm/java-21-amazon-corretto/bin/java
+sonarqube_packages:
+  - unzip
+  - fontconfig
+  - "{{ sonarqube_java_package }}"
+
+sonarqube_update_packages: false
+sonarqube_service_name: sonarqube
+
+# Conservative heaps for t3.medium (4 GiB RAM)
+sonarqube_search_java_opts: "-Xmx512m -Xms512m -XX:+HeapDumpOnOutOfMemoryError"
+sonarqube_web_java_opts: "-Xmx512m -Xms128m -XX:+HeapDumpOnOutOfMemoryError"
+sonarqube_ce_java_opts: "-Xmx512m -Xms128m -XX:+HeapDumpOnOutOfMemoryError"
+
+sonarqube_vm_max_map_count: 524288
+sonarqube_fs_file_max: 131072
+sonarqube_nofile_limit: 131072
+sonarqube_nproc_limit: 8192
+
+sonarqube_wait_timeout: 300
+sonarqube_wait_delay: 10

@@ -1,0 +1,51 @@
+# Copy to terraform.tfvars and adjust as needed:
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Do not commit terraform.tfvars (it is gitignored).
+
+aws_region   = "us-east-1"
+project_name = "deploy-bedrock"
+environment  = "development"
+
+# Map of models to allow via IAM. Amazon first-party models typically need no agreement.
+# For Anthropic/Meta/etc., set accept_agreement = true (and optionally enable_anthropic_use_case).
+models = {
+  nova_lite = {
+    model_id          = "amazon.nova-lite-v1:0"
+    inference_profile = "us.amazon.nova-lite-v1:0"
+    accept_agreement  = false
+  }
+  titan_embed = {
+    model_id         = "amazon.titan-embed-text-v2:0"
+    accept_agreement = false
+  }
+  claude_sonnet = {
+    model_id          = "anthropic.claude-sonnet-4-20250514-v1:0"
+    inference_profile = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    accept_agreement  = true
+  }
+  claude_haiku = {
+    model_id          = "anthropic.claude-haiku-4-5-20251001-v1:0"
+    inference_profile = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    accept_agreement  = true
+  }
+}
+
+# Regional singleton — only one Bedrock logging config exists per region.
+enable_invocation_logging = true
+log_retention_days        = 14
+
+# Optional Guardrail (content + profanity filters)
+enable_guardrail = false
+# guardrail_name   = "deploy-bedrock-guardrail"
+
+# First-time Anthropic access form (destroy does not delete the use case)
+enable_anthropic_use_case = true
+anthropic_use_case_form = {
+  companyName         = "Example Corp"
+  companyWebsite      = "https://example.com"
+  intendedUsers       = "0"
+  industryOption      = "Technology"
+  otherIndustryOption = ""
+  useCases            = "- Internal developer assistants\n- Document summarization\n- Code generation and review"
+}

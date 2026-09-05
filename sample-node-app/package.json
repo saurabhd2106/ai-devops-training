@@ -1,0 +1,19 @@
+{
+  "name": "sonarqube-node-demo",
+  "version": "1.0.0",
+  "description": "Express demo intentionally seeded with SonarQube training issues.",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "test": "jest --coverage"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}

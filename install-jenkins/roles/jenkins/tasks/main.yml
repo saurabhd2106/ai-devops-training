@@ -1,0 +1,75 @@
+---
+- name: Assert target is Amazon Linux 2023 (RedHat family)
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == "RedHat"
+      - ansible_distribution == "Amazon"
+      - ansible_distribution_major_version | int == 2023
+    fail_msg: >-
+      This role supports Amazon Linux 2023 only
+      (got {{ ansible_distribution }} {{ ansible_distribution_version }},
+      os_family={{ ansible_os_family }}).
+    success_msg: "Target OS is Amazon Linux 2023."
+
+- name: Update all packages
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+  when: jenkins_update_packages | bool
+
+- name: Install Java and fontconfig before Jenkins
+  ansible.builtin.dnf:
+    name: "{{ jenkins_packages }}"
+    state: present
+
+- name: Import Jenkins LTS GPG key
+  ansible.builtin.rpm_key:
+    key: "{{ jenkins_gpg_key_url }}"
+    state: present
+
+- name: Add Jenkins LTS yum repository
+  ansible.builtin.yum_repository:
+    name: "{{ jenkins_repo_name }}"
+    description: "{{ jenkins_repo_description }}"
+    baseurl: "{{ jenkins_repo_baseurl }}"
+    gpgcheck: true
+    gpgkey: "{{ jenkins_repo_gpgkey }}"
+    enabled: true
+    state: present
+
+- name: Install Jenkins package
+  ansible.builtin.dnf:
+    name: jenkins
+    state: present
+  notify: Restart Jenkins
+
+- name: Flush handlers so Jenkins restarts before wait
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start Jenkins service
+  ansible.builtin.systemd:
+    name: "{{ jenkins_service_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for Jenkins HTTP port
+  ansible.builtin.wait_for:
+    port: "{{ jenkins_http_port }}"
+    host: 127.0.0.1
+    delay: "{{ jenkins_wait_delay }}"
+    timeout: "{{ jenkins_wait_timeout }}"
+    state: started
+
+- name: Read Jenkins initial admin password
+  ansible.builtin.slurp:
+    src: "{{ jenkins_initial_admin_password_path }}"
+  register: jenkins_initial_admin_password
+  changed_when: false
+
+- name: Display unlock URL and initial admin password
+  ansible.builtin.debug:
+    msg: >-
+      Jenkins is running. Open http://{{ ansible_host | default(inventory_hostname) }}:{{ jenkins_http_port }}
+      and unlock with password:
+      {{ jenkins_initial_admin_password.content | b64decode | trim }}

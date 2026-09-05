@@ -1,0 +1,30 @@
+# Copy to terraform.tfvars and adjust as needed:
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Do not commit terraform.tfvars (it is gitignored).
+
+aws_region   = "us-east-1"
+project_name = "deploy-ecr"
+environment  = "development"
+
+# Map of repositories: key becomes the short name under {project_name}/{key}.
+# Set enabled = false to skip creating a repo without removing it from the map.
+repositories = {
+  app = {
+    enabled         = true
+    mutable         = true
+    scan_on_push    = true
+    max_image_count = 10
+  }
+  # api = {
+  #   mutable         = false
+  #   scan_on_push    = true
+  #   max_image_count = 20
+  # }
+}
+
+# Optional
+# encryption_type      = "AES256"   # or "KMS"
+# kms_key              = null
+# untagged_expiry_days = 7
+# force_delete         = true

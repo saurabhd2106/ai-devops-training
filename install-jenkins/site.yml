@@ -1,0 +1,7 @@
+---
+# Install Jenkins LTS on the deploy-vm Jenkins EC2 (Amazon Linux 2023).
+- name: Install Jenkins
+  hosts: jenkins
+  become: true
+  roles:
+    - role: jenkins

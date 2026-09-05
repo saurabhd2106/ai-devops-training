@@ -1,0 +1,5 @@
+---
+# Override role defaults here if needed.
+# sonarqube_http_port: 9000
+# sonarqube_update_packages: false
+# sonarqube_version: "26.8.0.126808"

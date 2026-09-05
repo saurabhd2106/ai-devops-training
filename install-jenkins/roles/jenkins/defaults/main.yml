@@ -1,0 +1,17 @@
+---
+jenkins_http_port: 8080
+jenkins_java_package: java-21-amazon-corretto
+jenkins_packages:
+  - fontconfig
+  - "{{ jenkins_java_package }}"
+jenkins_repo_name: jenkins
+jenkins_repo_description: Jenkins LTS
+jenkins_repo_baseurl: https://pkg.jenkins.io/rpm-stable
+jenkins_repo_gpgkey: https://pkg.jenkins.io/rpm-stable/jenkins.io-2026.key
+jenkins_gpg_key_url: https://pkg.jenkins.io/rpm-stable/jenkins.io-2026.key
+jenkins_update_packages: false
+jenkins_service_name: jenkins
+jenkins_home: /var/lib/jenkins
+jenkins_initial_admin_password_path: /var/lib/jenkins/secrets/initialAdminPassword
+jenkins_wait_timeout: 180
+jenkins_wait_delay: 5

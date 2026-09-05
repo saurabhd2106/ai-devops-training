@@ -1,0 +1,41 @@
+# Terraform local state, plugins, and personal values
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfvars
+!*.tfvars.example
+*.tfvars.json
+
+# Ansible live inventories (IPs / host-specific paths)
+**/inventory.ini
+!**/inventory.ini.example
+
+# Secrets and keys
+.env
+.env.*
+*.pem
+*.key
+id_rsa
+id_ed25519
+*.p12
+*.pfx
+credentials.json
+
+# Dependencies and build output
+node_modules/
+target/
+coverage/
+.m2/
+.sonar/
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
