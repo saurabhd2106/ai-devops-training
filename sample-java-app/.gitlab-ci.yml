@@ -157,7 +157,7 @@ package:
   script:
     - *resolve_app
     - cd "${APP_DIR}" && mvn $MAVEN_CLI_OPTS -DskipTests package
-    - test -f "${APP_DIR}/target/${JAR_NAME}"
+    - test -f "${CI_PROJECT_DIR}/${APP_DIR}/target/${JAR_NAME}"
   artifacts:
     name: "package-${CI_COMMIT_SHORT_SHA}"
     expire_in: 1 week
