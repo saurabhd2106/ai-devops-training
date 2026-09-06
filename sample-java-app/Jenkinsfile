@@ -3,14 +3,9 @@ pipeline {
 
     parameters {
         string(
-            name: 'S3_BUCKET',
-            defaultValue: '',
-            description: 'CI artifacts S3 bucket name from terraform output ci_artifacts_bucket (deploy-vm)'
-        )
-        string(
             name: 'AWS_REGION',
             defaultValue: 'us-east-1',
-            description: 'AWS region for S3 uploads'
+            description: 'AWS region for S3 uploads (override; defaults to us-east-1)'
         )
     }
 
@@ -105,11 +100,11 @@ pipeline {
                 dir(env.APP_DIR) {
                     archiveArtifacts artifacts: 'target/sonarqube-java-demo-*.jar,target/surefire-reports/*.xml', fingerprint: true, allowEmptyArchive: false
                     script {
-                        if (!params.S3_BUCKET?.trim()) {
-                            error('S3_BUCKET parameter is required (terraform -chdir=deploy-vm output -raw ci_artifacts_bucket)')
+                        if (!env.S3_BUCKET?.trim()) {
+                            error('S3_BUCKET must be set as a Jenkins environment variable (terraform -chdir=deploy-vm output -raw ci_artifacts_bucket)')
                         }
-                        def bucket = params.S3_BUCKET.trim()
-                        def region = params.AWS_REGION.trim()
+                        def bucket = env.S3_BUCKET.trim()
+                        def region = params.AWS_REGION?.trim() ?: 'us-east-1'
                         def prefix = "sample-java-app/${env.BUILD_NUMBER}"
                         withEnv(["AWS_DEFAULT_REGION=${region}", "S3_BUCKET=${bucket}", "S3_PREFIX=${prefix}"]) {
                             sh '''

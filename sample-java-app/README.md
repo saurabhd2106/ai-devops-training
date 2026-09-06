@@ -23,7 +23,7 @@ terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket
 |-------|-----------------|
 | SonarQube **public** IP `:9000` | Browser, GitLab `SONAR_HOST_URL` (shared GitLab.com runners) |
 | SonarQube **private** IP `:9000` | Jenkins environment variable `SONAR_HOST_URL` |
-| `ci_artifacts_bucket` | Jenkins job parameter `S3_BUCKET` |
+| `ci_artifacts_bucket` | Jenkins environment variable `S3_BUCKET` |
 
 ### 1. Create a SonarQube token
 
@@ -86,25 +86,24 @@ Click **Save** at the bottom.
 
 The default [`Jenkinsfile`](Jenkinsfile) uses `PATH` (`/opt/maven/bin`, `/opt/sonar-scanner/bin`) rather than `tool` steps. Configuring Tools still lets you select them in freestyle jobs and in [`Jenkinsfile.sonarqube-java-demo`](Jenkinsfile.sonarqube-java-demo) if you switch to `tool` bindings.
 
-#### Environment variable (Manage Jenkins → System → Global properties)
+#### Environment variables (Manage Jenkins → System → Global properties)
 
-Both Jenkinsfiles read `SONAR_HOST_URL` from the Jenkins environment (not a job parameter).
+[`Jenkinsfile`](Jenkinsfile) reads `SONAR_HOST_URL` and `S3_BUCKET` from the Jenkins environment (not job parameters).
 
 1. Check **Environment variables**
-2. **Add** → Name: `SONAR_HOST_URL`, Value: `http://<sonarqube-private-ip>:9000`
+2. **Add**:
+   - Name: `SONAR_HOST_URL`, Value: `http://<sonarqube-private-ip>:9000`
+   - Name: `S3_BUCKET`, Value: `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`
 3. **Save**
 
-You can also set this on a folder or individual job instead of globally.
+You can also set these on a folder or individual job instead of globally.
 
 #### Pipeline job
 
 1. **New Item** → name `sample-java-app` → **Pipeline** → **OK**
-2. Check **This project is parameterized** after the first run (the Jenkinsfile defines `S3_BUCKET` and `AWS_REGION`).
-3. Pipeline → **Pipeline script from SCM** → your Git repo
-4. Script Path: `sample-java-app/Jenkinsfile` (monorepo) or `Jenkinsfile` (app-only checkout)
-5. **Save**, then **Build with Parameters**:
-   - `S3_BUCKET` = `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`
-   - `AWS_REGION` = `us-east-1` (or your `deploy-vm` region)
+2. Pipeline → **Pipeline script from SCM** → your Git repo
+3. Script Path: `sample-java-app/Jenkinsfile` (monorepo) or `Jenkinsfile` (app-only checkout)
+4. **Save**, then **Build** (optional parameter `AWS_REGION`, default `us-east-1`)
 
 ## Jenkins CI pipeline
 

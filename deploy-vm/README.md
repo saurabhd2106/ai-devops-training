@@ -83,7 +83,7 @@ terraform output private_ips
 terraform output -raw ci_artifacts_bucket
 ```
 
-Use `private_ips.sonarqube` as the Jenkins environment variable `SONAR_HOST_URL` (`http://<ip>:9000`) and `ci_artifacts_bucket` as the Jenkins `S3_BUCKET` parameter for [`sample-java-app`](../sample-java-app).
+Use `private_ips.sonarqube` as the Jenkins environment variable `SONAR_HOST_URL` (`http://<ip>:9000`) and `ci_artifacts_bucket` as the Jenkins environment variable `S3_BUCKET` for [`sample-java-app`](../sample-java-app).
 
 ### ECR publish (Jenkins)
 
@@ -170,7 +170,7 @@ Local state is used by default. Uncomment and configure the S3 backend in `versi
 
 | Output | Use |
 |--------|-----|
-| `ci_artifacts_bucket` | Jenkins pipeline parameter `S3_BUCKET` |
+| `ci_artifacts_bucket` | Jenkins environment variable `S3_BUCKET` |
 | `ci_artifacts_bucket_arn` | IAM / debugging |
 
 Bucket name pattern: `{project_name}-{environment}-ci-artifacts-{account_id}`. Objects are written by Jenkins via the shared instance role (`s3:ListBucket`, `s3:GetObject`, `s3:PutObject` on that bucket).
