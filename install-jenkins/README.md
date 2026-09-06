@@ -78,9 +78,8 @@ ansible-playbook site.yml -e jenkins_update_packages=true
    |-------|-------------|
    | **Manage Jenkins → Credentials** | Secret text ID **`sonarqube-token`** (token from SonarQube → My Account → Security). Optional: Kind **AWS Credentials**, ID **`aws-ci`**, if Jenkins is not using the `deploy-vm` instance profile. |
    | **Manage Jenkins → Tools** | JDK `jdk-26` → `/usr/lib/jvm/java-26-amazon-corretto.x86_64`. Maven `maven-3.9` → `/opt/maven`. SonarQube Scanner `sonar-scanner` → `/opt/sonar-scanner`. Uncheck **Install automatically**. |
-   | **Manage Jenkins → System → Global properties** | Environment variable **`SONAR_HOST_URL`** = `http://<sonarqube-private-ip>:9000` from `terraform -chdir=../deploy-vm output -json private_ips`. Required by both Jenkinsfiles. |
+   | **Manage Jenkins → System → Global properties** | Env **`SONAR_HOST_URL`** = `http://<sonarqube-private-ip>:9000`. Env **`S3_BUCKET`** = `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`. |
    | Job | **New Item** → Pipeline → **Pipeline script from SCM**, Script Path `sample-java-app/Jenkinsfile` |
-   | Parameter `S3_BUCKET` | `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket` |
 
 ## Variables
 
