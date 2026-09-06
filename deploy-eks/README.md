@@ -67,7 +67,7 @@ node_desired_size   = 2
 node_min_size       = 1
 node_max_size       = 4
 node_disk_size      = 30
-cluster_version     = "1.34"
+cluster_version     = "1.36"
 ```
 
 ### Wire Jenkins for kubectl deploy (Terraform AuthN/AuthZ)
@@ -118,7 +118,7 @@ Destroy also takes ~10–15 minutes (node group, then cluster, then VPC/NAT).
 | `aws_region` | no | `us-east-1` | AWS region |
 | `project_name` | no | `deploy-eks` | Tag / name prefix |
 | `environment` | no | `development` | `development` \| `staging` \| `production` \| `testing` |
-| `cluster_version` | no | `1.34` | Kubernetes version |
+| `cluster_version` | no | `1.36` | Kubernetes version |
 | `vpc_cidr` | no | `10.20.0.0/16` | VPC CIDR (distinct from deploy-vm) |
 | `public_subnet_cidrs` | no | `10.20.0.0/24`, `10.20.1.0/24` | Exactly 2 public CIDRs |
 | `private_subnet_cidrs` | no | `10.20.10.0/24`, `10.20.11.0/24` | Exactly 2 private CIDRs |

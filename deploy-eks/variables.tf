@@ -52,7 +52,7 @@ variable "private_subnet_cidrs" {
 variable "cluster_version" {
   description = "Kubernetes version for the EKS control plane and managed node group"
   type        = string
-  default     = "1.34"
+  default     = "1.36"
 }
 
 variable "allowed_api_cidr" {

@@ -104,6 +104,10 @@ You can also set these on a folder or individual job instead of globally.
 
 #### Pipeline job
 
+Preferred: create all sample jobs and the **Java** / **Node** views with sibling [`jenkins-pipeline`](../jenkins-pipeline) (`cp jobs.env.example jobs.env` → `./create-jobs.sh`).
+
+Or by hand:
+
 1. **New Item** → name `sample-java-app` → **Pipeline** → **OK**
 2. Pipeline → **Pipeline script from SCM** → your Git repo
 3. Script Path: `sample-java-app/Jenkinsfile` (monorepo) or `Jenkinsfile` (app-only checkout)
@@ -171,7 +175,7 @@ Declarative pipeline: [`Jenkinsfile.ecs`](Jenkinsfile.ecs). Builds with Docker M
 | Test | `mvn -B test jacoco:report` + JUnit / JaCoCo artefacts |
 | SonarQube | `mvn sonar:sonar` (`SONAR_HOST_URL` + credential `sonarqube-token`) |
 | Publish ECR | `docker build` / push `${BUILD_NUMBER}` and `latest` to ECR |
-| Deploy ECS | Rewrite task definition image → `register-task-definition` → `update-service` → `wait services-stable` |
+| Deploy ECS | Rewrite task definition image + port → `register-task-definition` → `update-service` → poll until PRIMARY `COMPLETED` (fails with diagnostics on timeout) |
 
 ### Job setup
 
@@ -187,13 +191,14 @@ Declarative pipeline: [`Jenkinsfile.ecs`](Jenkinsfile.ecs). Builds with Docker M
 | `ECS_SERVICE` | `app` |
 | `ECS_TASK_FAMILY` | `deploy-ecs-development-app` |
 | `ECS_CONTAINER_NAME` | `app` |
+| `ECS_CONTAINER_PORT` | `8080` |
 
 ### Prerequisites (ECR + ECS)
 
 1. Apply [`deploy-ecr`](../deploy-ecr) and attach `push_pull_policy_arn` to `deploy-vm` as `ecr_push_pull_policy_arn`.
-2. Apply [`deploy-ecs`](../deploy-ecs) with the Java service settings (`container_port = 8080`, `health_check_path = "/health"`, `image` pointing at the ECR repo). See `deploy-ecs/terraform.tfvars.example`.
+2. Apply [`deploy-ecs`](../deploy-ecs) with the Java service settings (`container_port = 8080`, `health_check_path = "/health"`, `image` pointing at the ECR repo). See `deploy-ecs/terraform.tfvars.example` (open demo uses `allowed_ingress_cidr = "0.0.0.0/0"`).
 3. Attach `ci_deploy_policy_arn` from `deploy-ecs` to `deploy-vm` as `ecs_deploy_policy_arn`, then `terraform apply` in `deploy-vm`.
-4. Docker must be installed on the Jenkins agent (`install-jenkins` does not install Docker; the existing [`Jenkinsfile.sonarqube-java-demo`](Jenkinsfile.sonarqube-java-demo) has the same requirement).
+4. Re-run [`install-jenkins`](../install-jenkins) so the agent has **Docker**, **python3**, and the `jenkins` user in the `docker` group.
 
 The app exposes `GET /health` for the ALB health check. Re-apply `deploy-ecs` with port **8080** before the first deploy; changing only the image in CI is not enough if the target group is still on port 80.
 
@@ -239,11 +244,11 @@ ci_principal_arn = "<terraform -chdir=../deploy-vm output -raw instance_role_arn
 
    `terraform apply` creates the EKS access entry and associates `AmazonEKSClusterAdminPolicy`.
 3. **`deploy-vm`**: set `eks_deploy_policy_arn` from `terraform -chdir=../deploy-eks output -raw ci_deploy_policy_arn`, keep `ecr_push_pull_policy_arn`, then `terraform apply`.
-4. **`install-jenkins`**: re-run `ansible-playbook site.yml` so **kubectl** is at `/usr/local/bin/kubectl`. Docker is still required on the agent separately (not installed by Ansible).
+4. **`install-jenkins`**: re-run `ansible-playbook site.yml` so **kubectl**, **Docker**, and **python3** are on the agent (`jenkins` is in the `docker` group).
 
 The pipeline calls `aws eks update-kubeconfig` with the instance profile; kubectl then uses that identity.
 
-After a successful deploy, open the NLB hostname printed in the build log (Service port **80** → container **8080**). Probes use TCP on 8080 (this demo app has no `/health` HTTP path).
+After a successful deploy, open the NLB hostname printed in the build log (Service port **80** → container **8080**). The app exposes `GET /health` (same as ECS); the Service probes use TCP on 8080.
 
 ## GitLab CI pipeline
 

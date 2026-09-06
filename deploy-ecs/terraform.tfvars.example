@@ -2,38 +2,55 @@
 #   cp terraform.tfvars.example terraform.tfvars
 #
 # Do not commit terraform.tfvars (it is gitignored).
+#
+# This example matches the sample-java-app / Jenkinsfile.ecs lab path.
+# For sample-node-app, swap the app service block for the Node example below.
+# Module defaults in variables.tf still use nginx so a bare apply without
+# an ECR image URL can serve a public demo.
 
 aws_region   = "us-east-1"
 project_name = "deploy-ecs"
 environment  = "development"
 
-# Map of ECS Fargate services. Set enabled = false to skip a service.
-# Default nginx demo (port 80). For sample-java-app / Jenkinsfile.ecs, use the
-# Java settings below instead (container_port 8080, health_check_path /health).
+# Java Spring Boot (sonarqube-java-demo) — use with sample-java-app/Jenkinsfile.ecs.
+# Replace ACCOUNT with your AWS account ID (or terraform -chdir=../deploy-ecr output).
 services = {
   app = {
-    image             = "public.ecr.aws/docker/library/nginx:stable"
+    image             = "ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/deploy-ecr/sonarqube-java-demo:latest"
     cpu               = 512
     memory            = 1024
-    container_port    = 80
+    container_port    = 8080
     desired_count     = 1
     path_pattern      = "/*"
     listener_priority = 100
-    create_ecr        = true
-    health_check_path = "/"
+    create_ecr        = false
+    health_check_path = "/health"
     # enabled         = true
   }
-  # Java Spring Boot (sonarqube-java-demo) — use with Jenkinsfile.ecs:
+  # Node Express (sonarqube-node-demo) — use with sample-node-app/Jenkinsfile.ecs
+  # (replace the Java app block above; only one app service on /* at a time):
   # app = {
-  #   image             = "ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/deploy-ecr/sonarqube-java-demo:latest"
-  #   cpu               = 512
-  #   memory            = 1024
-  #   container_port    = 8080
+  #   image             = "ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/deploy-ecr/sonarqube-node-demo:latest"
+  #   cpu               = 256
+  #   memory            = 512
+  #   container_port    = 3000
   #   desired_count     = 1
   #   path_pattern      = "/*"
   #   listener_priority = 100
   #   create_ecr        = false
   #   health_check_path = "/health"
+  # }
+  # Optional nginx quick-start (no custom image required):
+  # app = {
+  #   image             = "public.ecr.aws/docker/library/nginx:stable"
+  #   cpu               = 512
+  #   memory            = 1024
+  #   container_port    = 80
+  #   desired_count     = 1
+  #   path_pattern      = "/*"
+  #   listener_priority = 100
+  #   create_ecr        = true
+  #   health_check_path = "/"
   # }
   # Example second service (path-based routing on the same ALB):
   # api = {
@@ -49,9 +66,8 @@ services = {
   # }
 }
 
-# REQUIRED: your public IP as /32 (find with: curl -s ifconfig.me)
-# Used for ALB HTTP/HTTPS ingress. Use 0.0.0.0/0 only for a public demo.
-allowed_ingress_cidr = "203.0.113.25/32"
+# ALB HTTP/HTTPS ingress. Open demo uses 0.0.0.0/0; prefer your public IP as /32 for locked-down labs.
+allowed_ingress_cidr = "0.0.0.0/0"
 
 # Optional: ACM certificate ARN in this region enables HTTPS :443 + HTTP→HTTPS redirect
 # acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"

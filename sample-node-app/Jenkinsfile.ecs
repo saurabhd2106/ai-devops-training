@@ -1,12 +1,12 @@
-// Declarative CI/CD for sonarqube-java-demo: build, test, Sonar, ECR, ECS.
-// Jenkins job Script Path: sample-java-app/Jenkinsfile.ecs
-// (or Jenkinsfile.ecs if the job roots at sample-java-app)
+// Declarative CI/CD for sonarqube-node-demo: build, test, Sonar, ECR, ECS.
+// Jenkins job Script Path: sample-node-app/Jenkinsfile.ecs
+// (or Jenkinsfile.ecs if the job roots at sample-node-app)
 //
 // Prerequisites:
 //   - SONAR_HOST_URL Jenkins env var; credential ID sonarqube-token
-//   - Docker, aws CLI, python3 on the agent (install-jenkins installs Docker + python3)
+//   - Docker, aws CLI, python3 on the agent
 //   - deploy-vm instance role: ecr_push_pull_policy_arn + ecs_deploy_policy_arn
-//   - ECS service configured for container_port 8080 and health_check_path /health
+//   - ECS service configured for container_port 3000 and health_check_path /health
 
 pipeline {
     agent any
@@ -25,8 +25,8 @@ pipeline {
         )
         string(
             name: 'ECR_REPOSITORY',
-            defaultValue: 'deploy-ecr/sonarqube-java-demo',
-            description: 'ECR repository name (e.g. deploy-ecr/sonarqube-java-demo)'
+            defaultValue: 'deploy-ecr/sonarqube-node-demo',
+            description: 'ECR repository name (e.g. deploy-ecr/sonarqube-node-demo)'
         )
         string(
             name: 'ECS_CLUSTER',
@@ -50,15 +50,15 @@ pipeline {
         )
         string(
             name: 'ECS_CONTAINER_PORT',
-            defaultValue: '8080',
-            description: 'Container port for Spring Boot (must match ALB target group)'
+            defaultValue: '3000',
+            description: 'Container port for Express (must match ALB target group)'
         )
     }
 
     environment {
-        MAVEN_IMAGE = 'maven:3.9-eclipse-temurin-26'
-        IMAGE_NAME = 'sonarqube-java-demo'
-        JAR_NAME = 'sonarqube-java-demo-0.0.1-SNAPSHOT.jar'
+        NODE_IMAGE = 'node:20'
+        SONAR_SCANNER_IMAGE = 'sonarsource/sonar-scanner-cli:11'
+        IMAGE_NAME = 'sonarqube-node-demo'
         SONAR_TOKEN = credentials('sonarqube-token')
     }
 
@@ -67,12 +67,14 @@ pipeline {
             steps {
                 checkout scm
                 script {
-                    if (fileExists('pom.xml')) {
+                    if (fileExists('package.json') && !fileExists('sample-node-app/package.json')) {
                         env.APP_DIR = '.'
-                    } else if (fileExists('sample-java-app/pom.xml')) {
-                        env.APP_DIR = 'sample-java-app'
+                    } else if (fileExists('sample-node-app/package.json')) {
+                        env.APP_DIR = 'sample-node-app'
+                    } else if (fileExists('package.json')) {
+                        env.APP_DIR = '.'
                     } else {
-                        error 'Could not find pom.xml (expected sample-java-app or job rooted at that folder)'
+                        error 'Could not find package.json (expected sample-node-app or job rooted at that folder)'
                     }
                     echo "Using application directory: ${env.APP_DIR}"
                 }
@@ -93,10 +95,9 @@ pipeline {
                     sh '''
                         docker run --rm \
                           -v "$PWD":/workspace \
-                          -v "$HOME/.m2":/root/.m2 \
                           -w /workspace \
-                          "$MAVEN_IMAGE" \
-                          mvn -B -DskipTests package
+                          "$NODE_IMAGE" \
+                          npm ci
                     '''
                 }
             }
@@ -104,23 +105,25 @@ pipeline {
 
         stage('Test') {
             steps {
-                dir("${APP_DIR}") {
-                    sh '''
-                        docker run --rm \
-                          -v "$PWD":/workspace \
-                          -v "$HOME/.m2":/root/.m2 \
-                          -w /workspace \
-                          "$MAVEN_IMAGE" \
-                          mvn -B test jacoco:report
-                    '''
+                catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
+                    dir("${APP_DIR}") {
+                        sh '''
+                            docker run --rm \
+                              -v "$PWD":/workspace \
+                              -w /workspace \
+                              -e CI=true \
+                              "$NODE_IMAGE" \
+                              npm run test:ci
+                        '''
+                    }
                 }
             }
             post {
                 always {
                     dir("${APP_DIR}") {
-                        junit allowEmptyResults: true, testResults: 'target/surefire-reports/*.xml'
-                        archiveArtifacts artifacts: 'target/surefire-reports/**', allowEmptyArchive: true
-                        archiveArtifacts artifacts: 'target/site/jacoco/**', allowEmptyArchive: true
+                        junit allowEmptyResults: true, testResults: 'reports/junit/*.xml'
+                        archiveArtifacts artifacts: 'reports/junit/**', allowEmptyArchive: true
+                        archiveArtifacts artifacts: 'coverage/**', allowEmptyArchive: true
                     }
                 }
             }
@@ -137,13 +140,13 @@ pipeline {
                     sh '''
                         docker run --rm \
                           --network host \
-                          -v "$PWD":/workspace \
-                          -v "$HOME/.m2":/root/.m2 \
+                          -v "$PWD":/usr/src \
                           -e SONAR_HOST_URL \
                           -e SONAR_TOKEN \
-                          -w /workspace \
-                          "$MAVEN_IMAGE" \
-                          mvn -B sonar:sonar
+                          -w /usr/src \
+                          "$SONAR_SCANNER_IMAGE" \
+                          -Dsonar.host.url="${SONAR_HOST_URL}" \
+                          -Dsonar.token="${SONAR_TOKEN}"
                     '''
                 }
             }
@@ -167,7 +170,6 @@ pipeline {
                         env.DEPLOY_IMAGE_LATEST = imageLatest
 
                         sh """
-                            test -f target/${JAR_NAME}
                             docker build -t ${IMAGE_NAME}:${env.BUILD_NUMBER} -t ${IMAGE_NAME}:latest .
                             docker tag ${IMAGE_NAME}:${env.BUILD_NUMBER} ${imageTag}
                             docker tag ${IMAGE_NAME}:latest ${imageLatest}
@@ -191,7 +193,7 @@ pipeline {
                     def service = params.ECS_SERVICE.trim()
                     def family = params.ECS_TASK_FAMILY.trim()
                     def containerName = params.ECS_CONTAINER_NAME.trim()
-                    def containerPort = (params.ECS_CONTAINER_PORT ?: '8080').trim()
+                    def containerPort = (params.ECS_CONTAINER_PORT ?: '3000').trim()
                     def image = env.DEPLOY_IMAGE
 
                     if (!image?.trim()) {
@@ -226,13 +228,12 @@ import json, os, sys
 td = json.loads(sys.stdin.read())
 container = os.environ["ECS_CONTAINER_NAME"]
 image = os.environ["DEPLOY_IMAGE"]
-container_port = int(os.environ.get("ECS_CONTAINER_PORT", "8080"))
+container_port = int(os.environ.get("ECS_CONTAINER_PORT", "3000"))
 
 found = False
 for c in td.get("containerDefinitions", []):
     if c.get("name") == container:
         c["image"] = image
-        # Spring Boot listens on 8080; keep portMappings aligned with the ALB target group
         c["portMappings"] = [{
             "containerPort": container_port,
             "hostPort": container_port,

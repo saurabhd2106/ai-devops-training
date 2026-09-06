@@ -43,6 +43,27 @@
     state: present
   notify: Restart Jenkins
 
+- name: Install Docker Engine
+  ansible.builtin.dnf:
+    name: "{{ jenkins_docker_package }}"
+    state: present
+  when: jenkins_install_docker | bool
+
+- name: Enable and start Docker service
+  ansible.builtin.systemd:
+    name: "{{ jenkins_docker_service }}"
+    enabled: true
+    state: started
+  when: jenkins_install_docker | bool
+
+- name: Add jenkins user to the docker group
+  ansible.builtin.user:
+    name: "{{ jenkins_user }}"
+    groups: "{{ jenkins_docker_group }}"
+    append: true
+  when: jenkins_install_docker | bool
+  notify: Restart Jenkins
+
 - name: Ensure systemd drop-in directory exists for Jenkins
   ansible.builtin.file:
     path: /etc/systemd/system/jenkins.service.d

@@ -1,0 +1,242 @@
+// Declarative CI + deploy for sonarqube-node-demo onto the deploy-vm Application VM.
+// Jenkins job Script Path: sample-node-app/Jenkinsfile.deploy-app
+// (or Jenkinsfile.deploy-app if the job roots at sample-node-app)
+//
+// After S3 publish, deploys via SSM Send-Command (app VM pulls tarball and restarts systemd).
+// Optional Jenkins env: APP_INSTANCE_ID (otherwise discovers EC2 with tag Role=app).
+
+pipeline {
+    agent any
+
+    parameters {
+        string(
+            name: 'AWS_REGION',
+            defaultValue: 'us-east-1',
+            description: 'AWS region for S3 and SSM (override; defaults to us-east-1)'
+        )
+    }
+
+    environment {
+        PATH = "/opt/sonar-scanner/bin:${env.PATH}"
+        SONAR_TOKEN = credentials('sonarqube-token')
+        TARBALL_NAME = 'sonarqube-node-demo-1.0.0.tgz'
+    }
+
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    if (fileExists('sample-node-app/package.json')) {
+                        env.APP_DIR = 'sample-node-app'
+                    } else if (fileExists('package.json')) {
+                        env.APP_DIR = '.'
+                    } else {
+                        error('Neither sample-node-app/package.json nor package.json found in workspace')
+                    }
+                    echo "Using application directory: ${env.APP_DIR}"
+                }
+                sh '''
+                    command -v node >/dev/null || { echo "node not found on PATH (expected nodejs20 from install-jenkins)"; exit 1; }
+                    command -v npm >/dev/null || { echo "npm not found on PATH"; exit 1; }
+                    command -v aws >/dev/null || { echo "aws CLI not found on PATH"; exit 1; }
+                    node --version
+                    npm --version
+                    aws --version
+                '''
+            }
+        }
+
+        stage('Build') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh 'npm ci'
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
+                    dir(env.APP_DIR) {
+                        sh 'npm run test:ci'
+                    }
+                }
+            }
+            post {
+                always {
+                    dir(env.APP_DIR) {
+                        junit allowEmptyResults: true, testResults: 'reports/junit/*.xml'
+                        archiveArtifacts artifacts: 'coverage/**', allowEmptyArchive: true
+                    }
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh '''
+                        rm -rf node_modules
+                        npm ci --omit=dev
+                        tar -czf "${TARBALL_NAME}" \
+                          package.json package-lock.json app.js routes services utils node_modules
+                        test -f "${TARBALL_NAME}"
+                    '''
+                }
+            }
+        }
+
+        stage('SonarQube Scan') {
+            steps {
+                catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
+                    dir(env.APP_DIR) {
+                        script {
+                            if (!env.SONAR_HOST_URL?.trim()) {
+                                error('SONAR_HOST_URL must be set as a Jenkins environment variable')
+                            }
+                        }
+                        sh '''
+                            sonar-scanner \
+                              -Dsonar.host.url="${SONAR_HOST_URL}" \
+                              -Dsonar.token="${SONAR_TOKEN}"
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Publish artefacts') {
+            steps {
+                dir(env.APP_DIR) {
+                    archiveArtifacts artifacts: 'sonarqube-node-demo-*.tgz,reports/junit/*.xml', fingerprint: true, allowEmptyArchive: false
+                    script {
+                        if (!env.S3_BUCKET?.trim()) {
+                            error('S3_BUCKET must be set as a Jenkins environment variable (terraform -chdir=deploy-vm output -raw ci_artifacts_bucket)')
+                        }
+                        def bucket = env.S3_BUCKET.trim()
+                        def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                        def prefix = "sample-node-app/${env.BUILD_NUMBER}"
+                        env.S3_PREFIX = prefix
+                        withEnv(["AWS_DEFAULT_REGION=${region}", "S3_BUCKET=${bucket}", "S3_PREFIX=${prefix}"]) {
+                            sh '''
+                                command -v aws >/dev/null || { echo "aws CLI not found on PATH"; exit 1; }
+                                aws sts get-caller-identity
+                                test -f "${TARBALL_NAME}"
+                                aws s3 cp "${TARBALL_NAME}" \
+                                  "s3://${S3_BUCKET}/${S3_PREFIX}/" \
+                                  --only-show-errors
+                                if [ -d reports/junit ]; then
+                                  aws s3 cp reports/junit/ \
+                                    "s3://${S3_BUCKET}/${S3_PREFIX}/junit/" \
+                                    --recursive --only-show-errors
+                                fi
+                                aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/"
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Application VM') {
+            steps {
+                script {
+                    if (!env.S3_BUCKET?.trim()) {
+                        error('S3_BUCKET must be set as a Jenkins environment variable')
+                    }
+                    def bucket = env.S3_BUCKET.trim()
+                    def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                    def prefix = env.S3_PREFIX?.trim() ?: "sample-node-app/${env.BUILD_NUMBER}"
+                    def deployScript = "${env.APP_DIR}/ci/deploy-app.sh"
+
+                    withEnv(["AWS_DEFAULT_REGION=${region}", "S3_BUCKET=${bucket}", "S3_PREFIX=${prefix}", "DEPLOY_SCRIPT=${deployScript}"]) {
+                        sh '''
+                            set -euo pipefail
+                            test -f "${DEPLOY_SCRIPT}"
+                            aws s3 cp "${DEPLOY_SCRIPT}" \
+                              "s3://${S3_BUCKET}/${S3_PREFIX}/deploy-app.sh" \
+                              --only-show-errors
+
+                            INSTANCE_ID="${APP_INSTANCE_ID:-}"
+                            if [ -z "${INSTANCE_ID}" ]; then
+                              INSTANCE_ID="$(aws ec2 describe-instances \
+                                --filters "Name=tag:Role,Values=app" "Name=instance-state-name,Values=running" \
+                                --query 'Reservations[0].Instances[0].InstanceId' \
+                                --output text)"
+                            fi
+                            if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "None" ]; then
+                              echo "No running EC2 instance with tag Role=app found. Set APP_INSTANCE_ID or check deploy-vm."
+                              exit 1
+                            fi
+                            echo "Deploying to instance ${INSTANCE_ID}"
+
+                            cat > /tmp/ssm-deploy-params.json <<EOF
+{
+  "commands": [
+    "export S3_BUCKET=${S3_BUCKET}",
+    "export S3_PREFIX=${S3_PREFIX}",
+    "export TARBALL_NAME=${TARBALL_NAME}",
+    "export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}",
+    "aws s3 cp s3://${S3_BUCKET}/${S3_PREFIX}/deploy-app.sh /tmp/deploy-app.sh --only-show-errors",
+    "chmod +x /tmp/deploy-app.sh",
+    "/tmp/deploy-app.sh"
+  ]
+}
+EOF
+
+                            COMMAND_ID="$(aws ssm send-command \
+                              --instance-ids "${INSTANCE_ID}" \
+                              --document-name "AWS-RunShellScript" \
+                              --comment "sample-node-app deploy build ${BUILD_NUMBER}" \
+                              --timeout-seconds 600 \
+                              --parameters file:///tmp/ssm-deploy-params.json \
+                              --query 'Command.CommandId' \
+                              --output text)"
+
+                            echo "SSM CommandId=${COMMAND_ID}"
+                            if ! aws ssm wait command-executed \
+                              --command-id "${COMMAND_ID}" \
+                              --instance-id "${INSTANCE_ID}"; then
+                              echo "SSM command did not succeed; dumping output:"
+                              aws ssm get-command-invocation \
+                                --command-id "${COMMAND_ID}" \
+                                --instance-id "${INSTANCE_ID}" \
+                                --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
+                                --output json || true
+                              exit 1
+                            fi
+
+                            STATUS="$(aws ssm get-command-invocation \
+                              --command-id "${COMMAND_ID}" \
+                              --instance-id "${INSTANCE_ID}" \
+                              --query 'Status' \
+                              --output text)"
+                            aws ssm get-command-invocation \
+                              --command-id "${COMMAND_ID}" \
+                              --instance-id "${INSTANCE_ID}" \
+                              --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
+                              --output json
+                            if [ "${STATUS}" != "Success" ]; then
+                              echo "SSM command status was ${STATUS}, expected Success"
+                              exit 1
+                            fi
+                            echo "Deploy succeeded on ${INSTANCE_ID}"
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs(deleteDirs: true, notFailBuild: true)
+        }
+    }
+}

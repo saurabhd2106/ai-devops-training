@@ -12,17 +12,17 @@ Provisions an Amazon ECS **Fargate** cluster with an Application Load Balancer, 
 - **ECS Exec** enabled for interactive debugging into running tasks
 - CloudWatch Logs per service (14-day retention)
 
-| Role | Default image | CPU / memory | Port | Path |
-|------|---------------|--------------|------|------|
-| `app` | `public.ecr.aws/docker/library/nginx:stable` | 0.5 vCPU / 1 GiB | 80 | `/*` |
+| Role | Lab example (`terraform.tfvars.example`) | CPU / memory | Port | Path | Health |
+|------|------------------------------------------|--------------|------|------|--------|
+| `app` | `deploy-ecr/sonarqube-java-demo` (Spring Boot) | 0.5 vCPU / 1 GiB | 8080 | `/*` | `/health` |
 
-Terraform creates ECR repos when `create_ecr = true`. The default `image` is a public nginx image so `apply` serves traffic immediately. Point `image` at your ECR URL after you push.
+Module defaults in `variables.tf` still use public nginx on port 80 so a bare apply without an ECR image works. The checked-in example is the **Jenkins ECS** path (`Jenkinsfile.ecs`). Terraform creates ECR repos when `create_ecr = true`.
 
 ## Prerequisites
 
 - [Terraform](https://developer.hashicorp.com/terraform/install) `>= 1.5.7`
 - AWS credentials configured (`AWS_PROFILE`, env keys, or SSO)
-- Your current public IP (for the ALB ingress CIDR)
+- Your current public IP (for a locked-down ALB CIDR), or use `0.0.0.0/0` for an open demo (see `terraform.tfvars.example`)
 
 ```bash
 curl -s ifconfig.me
@@ -34,9 +34,9 @@ curl -s ifconfig.me
 cd deploy-ecs
 
 cp terraform.tfvars.example terraform.tfvars
-# Set allowed_ingress_cidr; adjust services{} as needed
+# Replace ACCOUNT in services.app.image; allowed_ingress_cidr defaults to 0.0.0.0/0 for open demo
 
-# Or inject via env:
+# Or lock ALB to your IP:
 #   export TF_VAR_allowed_ingress_cidr="$(curl -s ifconfig.me)/32"
 
 terraform init
@@ -104,6 +104,17 @@ For [`sample-java-app/Jenkinsfile.ecs`](../sample-java-app/Jenkinsfile.ecs), con
 - `image` = your `deploy-ecr/sonarqube-java-demo` URL (or let CI update the task definition after the first push)
 - `create_ecr = false` if images live in the separate [`deploy-ecr`](../deploy-ecr) stack
 
+### Node app (sample-node-app) on Fargate
+
+For [`sample-node-app/Jenkinsfile.ecs`](../sample-node-app/Jenkinsfile.ecs), configure the `app` service for Express (see the commented Node block in `terraform.tfvars.example`):
+
+- `container_port = 3000`
+- `health_check_path = "/health"`
+- `image` = your `deploy-ecr/sonarqube-node-demo` URL
+- `create_ecr = false` if images live in `deploy-ecr`
+
+Only one `app` service on `/*` at a time — choose Java **or** Node in `terraform.tfvars`, then run the matching Jenkinsfile.
+
 Attach the CI deploy policy to the Jenkins instance role:
 
 ```bash
@@ -142,7 +153,7 @@ NAT Gateway and ALB bill by the hour — destroy when idle.
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `allowed_ingress_cidr` | **yes** | — | CIDR for ALB HTTP/HTTPS. Prefer `/32`. |
+| `allowed_ingress_cidr` | **yes** | — | CIDR for ALB HTTP/HTTPS. Example uses `0.0.0.0/0` for open demo; prefer `/32` for locked-down labs. |
 | `services` | no | one `app` service | Map of Fargate services |
 | `aws_region` | no | `us-east-1` | AWS region |
 | `project_name` | no | `deploy-ecs` | Tag / name prefix |

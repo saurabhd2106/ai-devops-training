@@ -1,6 +1,6 @@
-// Declarative CI/CD for sonarqube-java-demo: build, test, Sonar, ECR, EKS.
-// Jenkins job Script Path: sample-java-app/Jenkinsfile.eks
-// (or Jenkinsfile.eks if the job roots at sample-java-app)
+// Declarative CI/CD for sonarqube-node-demo: build, test, Sonar, ECR, EKS.
+// Jenkins job Script Path: sample-node-app/Jenkinsfile.eks
+// (or Jenkinsfile.eks if the job roots at sample-node-app)
 //
 // Prerequisites:
 //   - SONAR_HOST_URL Jenkins env var; credential ID sonarqube-token
@@ -25,8 +25,8 @@ pipeline {
         )
         string(
             name: 'ECR_REPOSITORY',
-            defaultValue: 'deploy-ecr/sonarqube-java-demo',
-            description: 'ECR repository name (e.g. deploy-ecr/sonarqube-java-demo)'
+            defaultValue: 'deploy-ecr/sonarqube-node-demo',
+            description: 'ECR repository name (e.g. deploy-ecr/sonarqube-node-demo)'
         )
         string(
             name: 'EKS_CLUSTER',
@@ -41,9 +41,9 @@ pipeline {
     }
 
     environment {
-        MAVEN_IMAGE = 'maven:3.9-eclipse-temurin-26'
-        IMAGE_NAME = 'sonarqube-java-demo'
-        JAR_NAME = 'sonarqube-java-demo-0.0.1-SNAPSHOT.jar'
+        NODE_IMAGE = 'node:20'
+        SONAR_SCANNER_IMAGE = 'sonarsource/sonar-scanner-cli:11'
+        IMAGE_NAME = 'sonarqube-node-demo'
         SONAR_TOKEN = credentials('sonarqube-token')
         KUBECTL_VERSION = '1.36.0'
     }
@@ -53,12 +53,14 @@ pipeline {
             steps {
                 checkout scm
                 script {
-                    if (fileExists('pom.xml')) {
+                    if (fileExists('package.json') && !fileExists('sample-node-app/package.json')) {
                         env.APP_DIR = '.'
-                    } else if (fileExists('sample-java-app/pom.xml')) {
-                        env.APP_DIR = 'sample-java-app'
+                    } else if (fileExists('sample-node-app/package.json')) {
+                        env.APP_DIR = 'sample-node-app'
+                    } else if (fileExists('package.json')) {
+                        env.APP_DIR = '.'
                     } else {
-                        error 'Could not find pom.xml (expected sample-java-app or job rooted at that folder)'
+                        error 'Could not find package.json (expected sample-node-app or job rooted at that folder)'
                     }
                     echo "Using application directory: ${env.APP_DIR}"
                 }
@@ -82,10 +84,9 @@ pipeline {
                     sh '''
                         docker run --rm \
                           -v "$PWD":/workspace \
-                          -v "$HOME/.m2":/root/.m2 \
                           -w /workspace \
-                          "$MAVEN_IMAGE" \
-                          mvn -B -DskipTests package
+                          "$NODE_IMAGE" \
+                          npm ci
                     '''
                 }
             }
@@ -93,23 +94,25 @@ pipeline {
 
         stage('Test') {
             steps {
-                dir("${APP_DIR}") {
-                    sh '''
-                        docker run --rm \
-                          -v "$PWD":/workspace \
-                          -v "$HOME/.m2":/root/.m2 \
-                          -w /workspace \
-                          "$MAVEN_IMAGE" \
-                          mvn -B test jacoco:report
-                    '''
+                catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
+                    dir("${APP_DIR}") {
+                        sh '''
+                            docker run --rm \
+                              -v "$PWD":/workspace \
+                              -w /workspace \
+                              -e CI=true \
+                              "$NODE_IMAGE" \
+                              npm run test:ci
+                        '''
+                    }
                 }
             }
             post {
                 always {
                     dir("${APP_DIR}") {
-                        junit allowEmptyResults: true, testResults: 'target/surefire-reports/*.xml'
-                        archiveArtifacts artifacts: 'target/surefire-reports/**', allowEmptyArchive: true
-                        archiveArtifacts artifacts: 'target/site/jacoco/**', allowEmptyArchive: true
+                        junit allowEmptyResults: true, testResults: 'reports/junit/*.xml'
+                        archiveArtifacts artifacts: 'reports/junit/**', allowEmptyArchive: true
+                        archiveArtifacts artifacts: 'coverage/**', allowEmptyArchive: true
                     }
                 }
             }
@@ -126,13 +129,13 @@ pipeline {
                     sh '''
                         docker run --rm \
                           --network host \
-                          -v "$PWD":/workspace \
-                          -v "$HOME/.m2":/root/.m2 \
+                          -v "$PWD":/usr/src \
                           -e SONAR_HOST_URL \
                           -e SONAR_TOKEN \
-                          -w /workspace \
-                          "$MAVEN_IMAGE" \
-                          mvn -B sonar:sonar
+                          -w /usr/src \
+                          "$SONAR_SCANNER_IMAGE" \
+                          -Dsonar.host.url="${SONAR_HOST_URL}" \
+                          -Dsonar.token="${SONAR_TOKEN}"
                     '''
                 }
             }
@@ -156,7 +159,6 @@ pipeline {
                         env.DEPLOY_IMAGE_LATEST = imageLatest
 
                         sh """
-                            test -f target/${JAR_NAME}
                             docker build -t ${IMAGE_NAME}:${env.BUILD_NUMBER} -t ${IMAGE_NAME}:latest .
                             docker tag ${IMAGE_NAME}:${env.BUILD_NUMBER} ${imageTag}
                             docker tag ${IMAGE_NAME}:latest ${imageLatest}
@@ -216,12 +218,12 @@ pipeline {
                                 cp k8s/service.yaml /tmp/k8s-rendered/service.yaml
 
                                 "${KUBECTL}" apply -n "${K8S_NAMESPACE}" -f /tmp/k8s-rendered/
-                                "${KUBECTL}" rollout status deployment/sonarqube-java-demo \
+                                "${KUBECTL}" rollout status deployment/sonarqube-node-demo \
                                   -n "${K8S_NAMESPACE}" --timeout=300s
 
                                 echo "Waiting for LoadBalancer hostname..."
                                 for i in $(seq 1 36); do
-                                  HOST=$("${KUBECTL}" get svc sonarqube-java-demo \
+                                  HOST=$("${KUBECTL}" get svc sonarqube-node-demo \
                                     -n "${K8S_NAMESPACE}" \
                                     -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
                                   if [ -n "${HOST}" ]; then
@@ -231,10 +233,10 @@ pipeline {
                                   sleep 5
                                 done
                                 if [ -z "${HOST:-}" ]; then
-                                  echo "LoadBalancer hostname not ready yet; check: kubectl get svc sonarqube-java-demo -n ${K8S_NAMESPACE}"
+                                  echo "LoadBalancer hostname not ready yet; check: kubectl get svc sonarqube-node-demo -n ${K8S_NAMESPACE}"
                                 fi
 
-                                "${KUBECTL}" get deployment,svc,pods -n "${K8S_NAMESPACE}" -l app=sonarqube-java-demo
+                                "${KUBECTL}" get deployment,svc,pods -n "${K8S_NAMESPACE}" -l app=sonarqube-node-demo
                             '''
                         }
                     }

@@ -11,6 +11,10 @@ app.get("/", (req, res) => {
   res.json({ message: "sonarqube-node-demo is running" });
 });
 
+app.get("/health", (req, res) => {
+  res.status(200).send("ok");
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });

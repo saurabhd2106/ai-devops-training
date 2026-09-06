@@ -5,7 +5,7 @@ Provisions private Amazon ECR repositories using the **HashiCorp AWS provider `~
 ## Architecture
 
 - One private ECR repository per entry in the `repositories` map
-- Repository name pattern: `{project_name}/{key}` (defaults: `deploy-ecr/app`, `deploy-ecr/sonarqube-java-demo`)
+- Repository name pattern: `{project_name}/{key}` (defaults: `deploy-ecr/app`, `deploy-ecr/sonarqube-java-demo`, `deploy-ecr/sonarqube-node-demo`)
 - Basic image scanning on push (no Amazon Inspector enhanced scanning)
 - Encryption at rest: **AES256** (SSE-S3) by default; optional `KMS`
 - Lifecycle: expire untagged images after 7 days; keep last N tagged images
