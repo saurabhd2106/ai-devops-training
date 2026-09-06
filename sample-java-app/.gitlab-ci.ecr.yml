@@ -1,0 +1,257 @@
+# GitLab CI equivalent of sample-java-app/Jenkinsfile.sonarqube-java-demo
+# Maven build → test → AI → Sonar → AI → ECR push (Kaniko).
+#
+# Settings → CI/CD → General pipelines → CI/CD configuration file:
+#   Monorepo:  sample-java-app/.gitlab-ci.ecr.yml
+#   App-only:  .gitlab-ci.ecr.yml
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+stages:
+  - build
+  - test
+  - ai-tests
+  - sonarqube
+  - ai-review
+  - publish
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  MAVEN_CLI_OPTS: "--batch-mode --errors --show-version --no-transfer-progress"
+  JAR_NAME: "sonarqube-java-demo-0.0.1-SNAPSHOT.jar"
+  IMAGE_NAME: "sonarqube-java-demo"
+  SONAR_PROJECT_KEY: "sonarqube-java-demo"
+  ECR_REPOSITORY: "deploy-ecr/sonarqube-java-demo"
+  AWS_REGION: "us-east-1"
+  AWS_DEFAULT_REGION: "us-east-1"
+  AI_OUT_DIR: "$CI_PROJECT_DIR/ai-review"
+  WORKSPACE: "$CI_PROJECT_DIR"
+  FF_USE_FASTZIP: "true"
+
+.resolve_app: &resolve_app |
+  set -euo pipefail
+  cd "${CI_PROJECT_DIR}"
+  if [ -f sample-java-app/pom.xml ]; then
+    export APP_DIR=sample-java-app
+  elif [ -f pom.xml ]; then
+    export APP_DIR=.
+  else
+    echo "Neither sample-java-app/pom.xml nor pom.xml found"; exit 1
+  fi
+  if [ -f ci/ai/ai-review.sh ]; then
+    export AI_SCRIPT="${CI_PROJECT_DIR}/ci/ai/ai-review.sh"
+  elif [ -f "${APP_DIR}/ci/ai/ai-review.sh" ]; then
+    export AI_SCRIPT="${CI_PROJECT_DIR}/${APP_DIR}/ci/ai/ai-review.sh"
+  else
+    export AI_SCRIPT=
+  fi
+  export AI_OUT_DIR="${CI_PROJECT_DIR}/ai-review"
+  export WORKSPACE="${CI_PROJECT_DIR}"
+  export AWS_DEFAULT_REGION="${AWS_REGION:-us-east-1}"
+  mkdir -p sample-java-app/target/surefire-reports target/surefire-reports sample-java-app/target/classes target/classes ai-review
+  echo "APP_DIR=${APP_DIR} AI_SCRIPT=${AI_SCRIPT:-'(not found)'}"
+
+.install_aws: &install_aws |
+  apt-get update -qq && apt-get install -y -qq curl unzip ca-certificates git >/dev/null
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install -i /usr/local/aws-cli -b /usr/local/bin
+
+default:
+  image: maven:3.9-eclipse-temurin-26
+  interruptible: true
+  cache:
+    key: "maven-ecr-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .m2/repository
+
+build:
+  stage: build
+  script:
+    - *resolve_app
+    - cd "${APP_DIR}" && mvn $MAVEN_CLI_OPTS -DskipTests package
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - sample-java-app/target/
+      - target/
+
+test:
+  stage: test
+  needs:
+    - job: build
+      artifacts: true
+  script:
+    - *resolve_app
+    - cd "${APP_DIR}" && mvn $MAVEN_CLI_OPTS test jacoco:report
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit:
+        - sample-java-app/target/surefire-reports/TEST-*.xml
+        - target/surefire-reports/TEST-*.xml
+    paths:
+      - sample-java-app/target/
+      - target/
+
+.ai_job: &ai_job
+  image: python:3.12-slim
+  allow_failure: true
+  before_script:
+    - *install_aws
+
+ai:tests:
+  <<: *ai_job
+  stage: ai-tests
+  needs:
+    - job: test
+      artifacts: true
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${AI_SCRIPT}" ]; then echo "AI script not found; skipping"; exit 0; fi
+      mkdir -p "${AI_OUT_DIR}"
+      chmod +x "${AI_SCRIPT}"
+      "${AI_SCRIPT}" tests || true
+  artifacts:
+    when: always
+    paths: [ai-review/]
+    expire_in: 1 week
+
+sonarqube:
+  stage: sonarqube
+  needs:
+    - job: test
+      artifacts: true
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${SONAR_HOST_URL}" ] || [ -z "${SONAR_TOKEN}" ]; then
+        echo "SONAR_HOST_URL and SONAR_TOKEN must be set as CI/CD variables."; exit 1
+      fi
+      cd "${APP_DIR}"
+      mvn $MAVEN_CLI_OPTS sonar:sonar \
+        -Dsonar.host.url="${SONAR_HOST_URL}" \
+        -Dsonar.token="${SONAR_TOKEN}" \
+        -Dsonar.projectKey="${SONAR_PROJECT_KEY:-sonarqube-java-demo}"
+  allow_failure: true
+  rules:
+    - if: $SONAR_HOST_URL && $SONAR_TOKEN
+
+ai:sonar:
+  <<: *ai_job
+  stage: ai-review
+  needs:
+    - job: sonarqube
+      optional: true
+    - job: test
+      artifacts: true
+    - job: ai:tests
+      artifacts: true
+      optional: true
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${AI_SCRIPT}" ]; then echo "AI script not found; skipping"; exit 0; fi
+      mkdir -p "${AI_OUT_DIR}"
+      chmod +x "${AI_SCRIPT}"
+      "${AI_SCRIPT}" sonar || true
+  artifacts:
+    when: always
+    paths: [ai-review/]
+    expire_in: 1 week
+
+ai:change:
+  <<: *ai_job
+  stage: ai-review
+  needs:
+    - job: test
+      artifacts: true
+    - job: ai:sonar
+      artifacts: true
+      optional: true
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${AI_SCRIPT}" ]; then echo "AI script not found; skipping"; exit 0; fi
+      mkdir -p "${AI_OUT_DIR}"
+      chmod +x "${AI_SCRIPT}"
+      "${AI_SCRIPT}" change || true
+  artifacts:
+    when: always
+    paths: [ai-review/]
+    expire_in: 1 week
+
+prepare:ecr-auth:
+  stage: publish
+  image:
+    name: amazon/aws-cli:2.22.35
+    entrypoint: [""]
+  resource_group: ecr-deploy-java
+  needs:
+    - job: build
+      artifacts: false
+  script:
+    - |
+      set -euo pipefail
+      export AWS_DEFAULT_REGION="${AWS_REGION:-us-east-1}"
+      ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+      REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+      PASSWORD="$(aws ecr get-login-password --region "${AWS_DEFAULT_REGION}")"
+      AUTH="$(printf '%s' "AWS:${PASSWORD}" | base64 -w0 2>/dev/null || printf '%s' "AWS:${PASSWORD}" | base64)"
+      mkdir -p ecr-auth
+      printf '%s\n' "{\"auths\":{\"${REGISTRY}\":{\"auth\":\"${AUTH}\"}}}" > ecr-auth/config.json
+      {
+        echo "DEPLOY_IMAGE=${REGISTRY}/${ECR_REPOSITORY}:${CI_PIPELINE_IID}"
+        echo "DEPLOY_IMAGE_LATEST=${REGISTRY}/${ECR_REPOSITORY}:latest"
+        echo "ECR_REGISTRY=${REGISTRY}"
+      } > ecr.env
+      echo "Prepared ECR auth for ${REGISTRY}"
+  artifacts:
+    reports:
+      dotenv: ecr.env
+    paths:
+      - ecr-auth/config.json
+    expire_in: 1 hour
+
+publish:ecr:
+  stage: publish
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  resource_group: ecr-deploy-java
+  needs:
+    - job: build
+      artifacts: true
+    - job: prepare:ecr-auth
+      artifacts: true
+    - job: ai:change
+      artifacts: true
+      optional: true
+  script:
+    - |
+      set -euo pipefail
+      cd "${CI_PROJECT_DIR}"
+      if [ -f sample-java-app/pom.xml ]; then APP_DIR=sample-java-app; else APP_DIR=.; fi
+      test -f "${APP_DIR}/target/${JAR_NAME}"
+      mkdir -p /kaniko/.docker
+      cp ecr-auth/config.json /kaniko/.docker/config.json
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}/${APP_DIR}" \
+        --dockerfile "${CI_PROJECT_DIR}/${APP_DIR}/Dockerfile" \
+        --destination "${DEPLOY_IMAGE}" \
+        --destination "${DEPLOY_IMAGE_LATEST}" \
+        --cache=true
+      echo "Published ${DEPLOY_IMAGE} and ${DEPLOY_IMAGE_LATEST}"
+  artifacts:
+    when: always
+    reports:
+      dotenv: ecr.env
+    paths:
+      - ai-review/
+      - ecr.env
+    expire_in: 1 week

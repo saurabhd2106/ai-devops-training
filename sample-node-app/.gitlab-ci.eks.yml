@@ -1,0 +1,362 @@
+# GitLab CI equivalent of sample-node-app/Jenkinsfile.eks
+# Build → test → AI → Sonar → AI → ECR → EKS kubectl deploy.
+#
+# Settings → CI/CD → General pipelines → CI/CD configuration file:
+#   Monorepo:  sample-node-app/.gitlab-ci.eks.yml
+#   App-only:  .gitlab-ci.eks.yml
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+stages:
+  - build
+  - test
+  - ai-tests
+  - sonarqube
+  - ai-review
+  - publish
+  - deploy
+  - ai-deploy
+
+variables:
+  IMAGE_NAME: "sonarqube-node-demo"
+  SONAR_PROJECT_KEY: "sonarqube-node-demo"
+  ECR_REPOSITORY: "deploy-ecr/sonarqube-node-demo"
+  EKS_CLUSTER: "deploy-eks-development"
+  K8S_NAMESPACE: "default"
+  KUBECTL_VERSION: "1.36.0"
+  AWS_REGION: "us-east-1"
+  AWS_DEFAULT_REGION: "us-east-1"
+  AI_OUT_DIR: "$CI_PROJECT_DIR/ai-review"
+  WORKSPACE: "$CI_PROJECT_DIR"
+  npm_config_cache: "$CI_PROJECT_DIR/.npm"
+  FF_USE_FASTZIP: "true"
+
+.resolve_app: &resolve_app |
+  set -euo pipefail
+  cd "${CI_PROJECT_DIR}"
+  if [ -f sample-node-app/package.json ]; then
+    export APP_DIR=sample-node-app
+  elif [ -f package.json ]; then
+    export APP_DIR=.
+  else
+    echo "Neither sample-node-app/package.json nor package.json found"; exit 1
+  fi
+  if [ -f ci/ai/ai-review.sh ]; then
+    export AI_SCRIPT="${CI_PROJECT_DIR}/ci/ai/ai-review.sh"
+  elif [ -f "${APP_DIR}/ci/ai/ai-review.sh" ]; then
+    export AI_SCRIPT="${CI_PROJECT_DIR}/${APP_DIR}/ci/ai/ai-review.sh"
+  else
+    export AI_SCRIPT=
+  fi
+  export AI_OUT_DIR="${CI_PROJECT_DIR}/ai-review"
+  export WORKSPACE="${CI_PROJECT_DIR}"
+  export AWS_DEFAULT_REGION="${AWS_REGION:-us-east-1}"
+  mkdir -p sample-node-app/reports/junit reports/junit sample-node-app/coverage coverage sample-node-app/node_modules node_modules ai-review
+  echo "APP_DIR=${APP_DIR} AI_SCRIPT=${AI_SCRIPT:-'(not found)'}"
+
+.install_aws: &install_aws |
+  apt-get update -qq && apt-get install -y -qq curl unzip ca-certificates git >/dev/null
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install -i /usr/local/aws-cli -b /usr/local/bin
+
+default:
+  image: node:20
+  interruptible: true
+  cache:
+    key: "npm-eks-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .npm/
+
+build:
+  stage: build
+  script:
+    - *resolve_app
+    - cd "${APP_DIR}" && npm ci
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - sample-node-app/node_modules/
+      - sample-node-app/package.json
+      - sample-node-app/package-lock.json
+      - node_modules/
+      - package.json
+      - package-lock.json
+
+test:
+  stage: test
+  needs:
+    - job: build
+      artifacts: true
+  script:
+    - *resolve_app
+    - cd "${APP_DIR}" && npm run test:ci
+  allow_failure: true
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit:
+        - sample-node-app/reports/junit/*.xml
+        - reports/junit/*.xml
+    paths:
+      - sample-node-app/reports/
+      - sample-node-app/coverage/
+      - reports/
+      - coverage/
+
+.ai_job: &ai_job
+  image: python:3.12-slim
+  allow_failure: true
+  before_script:
+    - *install_aws
+
+ai:tests:
+  <<: *ai_job
+  stage: ai-tests
+  needs:
+    - job: test
+      artifacts: true
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${AI_SCRIPT}" ]; then echo "AI script not found; skipping"; exit 0; fi
+      mkdir -p "${AI_OUT_DIR}"
+      chmod +x "${AI_SCRIPT}"
+      "${AI_SCRIPT}" tests || true
+  artifacts:
+    when: always
+    paths: [ai-review/]
+    expire_in: 1 week
+
+sonarqube:
+  stage: sonarqube
+  image:
+    name: sonarsource/sonar-scanner-cli:11
+    entrypoint: [""]
+  needs:
+    - job: test
+      artifacts: true
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
+    GIT_DEPTH: "0"
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${SONAR_HOST_URL}" ] || [ -z "${SONAR_TOKEN}" ]; then
+        echo "SONAR_HOST_URL and SONAR_TOKEN must be set as CI/CD variables."; exit 1
+      fi
+      cd "${APP_DIR}"
+      sonar-scanner \
+        -Dsonar.host.url="${SONAR_HOST_URL}" \
+        -Dsonar.token="${SONAR_TOKEN}" \
+        -Dsonar.projectKey="${SONAR_PROJECT_KEY:-sonarqube-node-demo}"
+  allow_failure: true
+  rules:
+    - if: $SONAR_HOST_URL && $SONAR_TOKEN
+
+ai:sonar:
+  <<: *ai_job
+  stage: ai-review
+  needs:
+    - job: sonarqube
+      optional: true
+    - job: test
+      artifacts: true
+    - job: ai:tests
+      artifacts: true
+      optional: true
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${AI_SCRIPT}" ]; then echo "AI script not found; skipping"; exit 0; fi
+      mkdir -p "${AI_OUT_DIR}"
+      chmod +x "${AI_SCRIPT}"
+      "${AI_SCRIPT}" sonar || true
+  artifacts:
+    when: always
+    paths: [ai-review/]
+    expire_in: 1 week
+
+ai:change:
+  <<: *ai_job
+  stage: ai-review
+  needs:
+    - job: test
+      artifacts: true
+    - job: ai:sonar
+      artifacts: true
+      optional: true
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${AI_SCRIPT}" ]; then echo "AI script not found; skipping"; exit 0; fi
+      mkdir -p "${AI_OUT_DIR}"
+      chmod +x "${AI_SCRIPT}"
+      "${AI_SCRIPT}" change || true
+  artifacts:
+    when: always
+    paths: [ai-review/]
+    expire_in: 1 week
+
+prepare:ecr-auth:
+  stage: publish
+  image:
+    name: amazon/aws-cli:2.22.35
+    entrypoint: [""]
+  resource_group: eks-deploy-node
+  needs:
+    - job: build
+      artifacts: false
+  script:
+    - |
+      set -euo pipefail
+      export AWS_DEFAULT_REGION="${AWS_REGION:-us-east-1}"
+      ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+      REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+      PASSWORD="$(aws ecr get-login-password --region "${AWS_DEFAULT_REGION}")"
+      AUTH="$(printf '%s' "AWS:${PASSWORD}" | base64 -w0 2>/dev/null || printf '%s' "AWS:${PASSWORD}" | base64)"
+      mkdir -p ecr-auth
+      printf '%s\n' "{\"auths\":{\"${REGISTRY}\":{\"auth\":\"${AUTH}\"}}}" > ecr-auth/config.json
+      {
+        echo "DEPLOY_IMAGE=${REGISTRY}/${ECR_REPOSITORY}:${CI_PIPELINE_IID}"
+        echo "DEPLOY_IMAGE_LATEST=${REGISTRY}/${ECR_REPOSITORY}:latest"
+      } > ecr.env
+  artifacts:
+    reports:
+      dotenv: ecr.env
+    paths:
+      - ecr-auth/config.json
+    expire_in: 1 hour
+
+publish:ecr:
+  stage: publish
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  resource_group: eks-deploy-node
+  needs:
+    - job: build
+      artifacts: true
+    - job: prepare:ecr-auth
+      artifacts: true
+    - job: ai:change
+      artifacts: true
+      optional: true
+  script:
+    - |
+      set -euo pipefail
+      cd "${CI_PROJECT_DIR}"
+      if [ -f sample-node-app/package.json ]; then APP_DIR=sample-node-app; else APP_DIR=.; fi
+      mkdir -p /kaniko/.docker
+      cp ecr-auth/config.json /kaniko/.docker/config.json
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}/${APP_DIR}" \
+        --dockerfile "${CI_PROJECT_DIR}/${APP_DIR}/Dockerfile" \
+        --destination "${DEPLOY_IMAGE}" \
+        --destination "${DEPLOY_IMAGE_LATEST}" \
+        --cache=true
+      echo "Published ${DEPLOY_IMAGE}"
+  artifacts:
+    reports:
+      dotenv: ecr.env
+    paths:
+      - ecr.env
+      - ai-review/
+    expire_in: 1 week
+
+deploy:eks:
+  stage: deploy
+  image: python:3.12-slim
+  resource_group: eks-deploy-node
+  needs:
+    - job: publish:ecr
+      artifacts: true
+  before_script:
+    - *install_aws
+  script:
+    - |
+      set -euo pipefail
+      cd "${CI_PROJECT_DIR}"
+      if [ -f sample-node-app/package.json ]; then APP_DIR=sample-node-app; else APP_DIR=.; fi
+      export AWS_DEFAULT_REGION="${AWS_REGION:-us-east-1}"
+      export WORKSPACE="${CI_PROJECT_DIR}"
+      mkdir -p "${CI_PROJECT_DIR}/ai-review"
+      if [ -z "${DEPLOY_IMAGE:-}" ]; then
+        echo "DEPLOY_IMAGE was not set by publish:ecr"; exit 1
+      fi
+
+      curl -fsSL -o /tmp/kubectl \
+        "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+      chmod +x /tmp/kubectl
+      KUBECTL=/tmp/kubectl
+      "${KUBECTL}" version --client
+
+      aws sts get-caller-identity
+      aws eks update-kubeconfig --name "${EKS_CLUSTER}" --region "${AWS_DEFAULT_REGION}"
+      "${KUBECTL}" get nodes
+
+      test -d "${APP_DIR}/k8s"
+      mkdir -p /tmp/k8s-rendered
+      sed "s|IMAGE_PLACEHOLDER|${DEPLOY_IMAGE}|g" "${APP_DIR}/k8s/deployment.yaml" > /tmp/k8s-rendered/deployment.yaml
+      cp "${APP_DIR}/k8s/service.yaml" /tmp/k8s-rendered/service.yaml
+
+      "${KUBECTL}" apply -n "${K8S_NAMESPACE}" -f /tmp/k8s-rendered/
+      if ! "${KUBECTL}" rollout status deployment/sonarqube-node-demo \
+        -n "${K8S_NAMESPACE}" --timeout=300s; then
+        {
+          echo "{\"target\":\"eks\",\"deployment\":\"sonarqube-node-demo\",\"error\":\"rollout failed\"}"
+          echo "--- pods ---"
+          "${KUBECTL}" get pods -n "${K8S_NAMESPACE}" -l app=sonarqube-node-demo -o wide || true
+          echo "--- describe deployment ---"
+          "${KUBECTL}" describe deployment/sonarqube-node-demo -n "${K8S_NAMESPACE}" || true
+          echo "--- recent events ---"
+          "${KUBECTL}" get events -n "${K8S_NAMESPACE}" --sort-by=.lastTimestamp | tail -n 40 || true
+        } > "${CI_PROJECT_DIR}/ai-review/deploy-diagnostics.json"
+        exit 1
+      fi
+
+      echo "Waiting for LoadBalancer hostname..."
+      HOST=""
+      for i in $(seq 1 36); do
+        HOST=$("${KUBECTL}" get svc sonarqube-node-demo \
+          -n "${K8S_NAMESPACE}" \
+          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+        if [ -n "${HOST}" ]; then
+          echo "Service endpoint: http://${HOST}"
+          break
+        fi
+        sleep 5
+      done
+      if [ -z "${HOST}" ]; then
+        echo "LoadBalancer hostname not ready yet; check: kubectl get svc sonarqube-node-demo -n ${K8S_NAMESPACE}"
+      fi
+      "${KUBECTL}" get deployment,svc,pods -n "${K8S_NAMESPACE}" -l app=sonarqube-node-demo
+  artifacts:
+    when: always
+    paths:
+      - ai-review/
+    expire_in: 1 week
+
+ai:deploy:
+  <<: *ai_job
+  stage: ai-deploy
+  needs:
+    - job: deploy:eks
+      artifacts: true
+  when: on_failure
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${AI_SCRIPT}" ]; then echo "AI script not found; skipping AI Deploy RCA"; exit 0; fi
+      export AI_DEPLOY_DIAG="${CI_PROJECT_DIR}/ai-review/deploy-diagnostics.json"
+      mkdir -p "${AI_OUT_DIR}"
+      chmod +x "${AI_SCRIPT}"
+      "${AI_SCRIPT}" deploy || true
+  artifacts:
+    when: always
+    paths: [ai-review/]
+    expire_in: 1 week

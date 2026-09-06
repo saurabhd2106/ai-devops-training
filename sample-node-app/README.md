@@ -4,7 +4,7 @@ Express demo for SonarQube training (intentional code-quality issues and one fai
 
 Local development only (not a deploy path): `npm install` | `npm start` | `npm test`.
 
-All lab provisioning and CI/CD runs through **Terraform**, **Ansible**, or a **Jenkinsfile**.
+All lab provisioning and CI/CD runs through **Terraform**, **Ansible**, a **Jenkinsfile**, or **GitLab CI** YAML.
 
 ## Execution contract
 
@@ -13,12 +13,13 @@ All lab provisioning and CI/CD runs through **Terraform**, **Ansible**, or a **J
 | **Terraform** | AWS resources (VMs, S3 artefacts bucket, ECR, ECS, EKS, IAM) | `terraform apply` in `deploy-vm`, `deploy-ecr`, `deploy-ecs`, `deploy-eks` |
 | **Ansible** | Tools on the Jenkins EC2 (Node 20, sonar-scanner, kubectl, …) | `ansible-playbook site.yml` in [`install-jenkins`](../install-jenkins) |
 | **Jenkinsfile** | Build, test, SonarQube, publish, and deploy | Jenkins **Pipeline script from SCM** → Script Path below |
+| **GitLab CI** | Same flows as Jenkinsfiles | **Settings → CI/CD → CI/CD configuration file** → path below |
 
-Supporting files (`Dockerfile`, `k8s/`, `ci/deploy-app.sh`) are consumed by Jenkinsfiles only. Do not run them by hand.
+Supporting files (`Dockerfile`, `k8s/`, `ci/deploy-app.sh`) are consumed by Jenkinsfiles and GitLab CI. Do not run them by hand.
 
 The shared Application VM (`Role=app`) and the single ECS `app` service can host **either** the Java sample **or** this Node sample at a time — not both.
 
-## CI credentials and Jenkins setup
+## CI credentials and tool configuration
 
 Do this after Terraform (`deploy-vm`) and Ansible (`install-sonarqube`, `install-jenkins`). Collect values once:
 
@@ -31,18 +32,59 @@ terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket
 
 | Value | Where to use it |
 |-------|-----------------|
+| SonarQube **public** IP `:9000` | Browser, GitLab `SONAR_HOST_URL` (shared GitLab.com runners) |
 | SonarQube **private** IP `:9000` | Jenkins environment variable `SONAR_HOST_URL` |
-| `ci_artifacts_bucket` | Jenkins environment variable `S3_BUCKET` |
-| App instance ID (`instance_ids.app`) | Optional Jenkins env `APP_INSTANCE_ID` for [`Jenkinsfile.deploy-app`](Jenkinsfile.deploy-app) |
+| `ci_artifacts_bucket` | Jenkins / GitLab `S3_BUCKET` |
+| App instance ID (`instance_ids.app`) | Optional Jenkins/GitLab `APP_INSTANCE_ID` for deploy-app pipelines |
 | App **public** IP | Verify VM deploy: `http://<app-public-ip>/health` |
 
 ### 1. Create a SonarQube token
 
 1. Open `http://<sonarqube-public-ip>:9000` and sign in.
 2. Avatar → **My Account** → **Security** → generate a **User Token** (e.g. `ci-sample-node-app`).
-3. Use the same credential ID as the Java jobs: `sonarqube-token`.
+3. Use the same token for Jenkins credential ID `sonarqube-token` and GitLab variable `SONAR_TOKEN`.
 
-### 2. Jenkins — credentials, tools, and environment
+### 2. GitLab — CI/CD configuration file and variables
+
+One GitLab project can only use **one** CI config file at a time. Pick the pipeline under **Settings → CI/CD → General pipelines → CI/CD configuration file**:
+
+| Pipeline (Jenkins equivalent) | Monorepo config path | App-only config path |
+|-------------------------------|----------------------|----------------------|
+| S3 + AI | `sample-node-app/.gitlab-ci.yml` | `.gitlab-ci.yml` |
+| S3 + AI + SSM Application VM deploy | `sample-node-app/.gitlab-ci.deploy-app.yml` | `.gitlab-ci.deploy-app.yml` |
+| ECR publish only | `sample-node-app/.gitlab-ci.ecr.yml` | `.gitlab-ci.ecr.yml` |
+| ECR + ECS deploy | `sample-node-app/.gitlab-ci.ecs.yml` | `.gitlab-ci.ecs.yml` |
+| ECR + EKS deploy | `sample-node-app/.gitlab-ci.eks.yml` | `.gitlab-ci.eks.yml` |
+
+Then **Settings → CI/CD → Variables → Add variable**. Mark tokens and keys **Masked** and **Hidden**; do not protect them unless every branch you scan is a protected branch.
+
+| Key | Value | Masked | Required for |
+|-----|-------|--------|--------------|
+| `SONAR_HOST_URL` | `http://<sonarqube-public-ip>:9000` | No | All Sonar + AI sonar jobs (public IP for GitLab.com runners) |
+| `SONAR_TOKEN` | token from step 1 | Yes | All Sonar + AI sonar jobs |
+| `SONAR_PROJECT_KEY` | `sonarqube-node-demo` | No | Optional; this is the default |
+| `S3_BUCKET` | `terraform -chdir=deploy-vm output -raw ci_artifacts_bucket` | No | S3 and SSM pipelines |
+| `APP_INSTANCE_ID` | `instance_ids.app` from `deploy-vm` | No | Optional for SSM; else discovers EC2 tag `Role=app` |
+| `AWS_DEFAULT_REGION` / `AWS_REGION` | `us-east-1` | No | AWS jobs |
+| `AWS_ACCESS_KEY_ID` | IAM access key | Yes | Only if the runner has **no** instance profile |
+| `AWS_SECRET_ACCESS_KEY` | IAM secret key | Yes | Pair with the access key |
+| `BEDROCK_MODEL_ID` | `us.amazon.nova-lite-v1:0` | No | Optional AI stages |
+| `BEDROCK_GUARDRAIL_ID` | from `deploy-bedrock` | No | Optional |
+| `BEDROCK_GUARDRAIL_VERSION` | `DRAFT` | No | Optional |
+| `ECR_REPOSITORY` | `deploy-ecr/sonarqube-node-demo` | No | Optional override for ECR/ECS/EKS |
+| `ECS_CLUSTER` / `ECS_SERVICE` / `ECS_TASK_FAMILY` / `ECS_CONTAINER_NAME` / `ECS_CONTAINER_PORT` | YAML defaults (`3000`) | No | Optional ECS overrides |
+| `EKS_CLUSTER` / `K8S_NAMESPACE` | YAML defaults | No | Optional EKS overrides |
+
+GitLab built-ins (do **not** create): `CI_PIPELINE_IID` (used as image/S3 build number), `CI_COMMIT_*`.
+
+**AWS identity for the runner (choose one):**
+
+- **Preferred for this lab:** self-hosted GitLab runner on the Jenkins EC2 — the `deploy-vm` instance profile already has S3 / Bedrock / ECR / ECS / EKS / SSM when those Terraform policies are attached.
+- **GitLab.com shared runners:** create an IAM user, attach the same policies, store keys as masked variables. For EKS, set `ci_principal_arn` in `deploy-eks` to that user’s ARN.
+
+There is **no** GitLab equivalent of Jenkins credential IDs `sonarqube-token` / `aws-ci` — use CI/CD variables only.
+
+### 3. Jenkins — credentials, tools, and environment
 
 Open `http://<jenkins-public-ip>:8080`.
 
@@ -208,3 +250,24 @@ AuthN/AuthZ use the **`deploy-vm` EC2 instance role** end-to-end.
 4. **`install-jenkins`**: `ansible-playbook site.yml` (Node 20, kubectl, Docker). Re-run after policy changes if needed.
 
 After a successful deploy, open the NLB hostname from the build log (Service port **80** → container **3000**).
+
+## GitLab CI pipelines
+
+Each file mirrors one Jenkinsfile. Set the **CI/CD configuration file** path as in [GitLab — CI/CD configuration file and variables](#2-gitlab--cicd-configuration-file-and-variables).
+
+| Config file | Jenkins equivalent | Stages |
+|-------------|-------------------|--------|
+| [`.gitlab-ci.yml`](.gitlab-ci.yml) | [`Jenkinsfile`](Jenkinsfile) | Build → test → AI tests → package → Sonar → AI review → S3 publish |
+| [`.gitlab-ci.deploy-app.yml`](.gitlab-ci.deploy-app.yml) | [`Jenkinsfile.deploy-app`](Jenkinsfile.deploy-app) | Same as S3 + SSM deploy + AI Deploy RCA on failure |
+| [`.gitlab-ci.ecr.yml`](.gitlab-ci.ecr.yml) | [`Jenkinsfile.sonarqube-node-demo`](Jenkinsfile.sonarqube-node-demo) | Build → test → AI → Sonar → AI → Kaniko → ECR |
+| [`.gitlab-ci.ecs.yml`](.gitlab-ci.ecs.yml) | [`Jenkinsfile.ecs`](Jenkinsfile.ecs) | ECR flow + ECS rolling deploy + AI Deploy RCA on failure |
+| [`.gitlab-ci.eks.yml`](.gitlab-ci.eks.yml) | [`Jenkinsfile.eks`](Jenkinsfile.eks) | ECR flow + EKS kubectl deploy + AI Deploy RCA on failure |
+
+Parity notes:
+
+- Test / Sonar / AI failures use `allow_failure: true` (same idea as Jenkins `catchError` UNSTABLE).
+- S3 prefix and image tags use `CI_PIPELINE_IID` instead of Jenkins `BUILD_NUMBER`.
+- ECR publish uses **Kaniko** (no privileged Docker needed on shared runners).
+- Reuses [`ci/ai/ai-review.sh`](../ci/ai/ai-review.sh) and [`ci/deploy-app.sh`](ci/deploy-app.sh).
+
+Lab infra prerequisites match the Jenkins sections above. Attach IAM policies to the **GitLab runner identity** when using access keys.

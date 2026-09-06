@@ -39,10 +39,6 @@ variable "models" {
       inference_profile = "us.amazon.nova-lite-v1:0"
       accept_agreement  = false
     }
-    titan_embed = {
-      model_id         = "amazon.titan-embed-text-v2:0"
-      accept_agreement = false
-    }
   }
 
   validation {

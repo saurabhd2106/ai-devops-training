@@ -1,0 +1,372 @@
+# GitLab CI equivalent of sample-node-app/Jenkinsfile.deploy-app
+# Same as .gitlab-ci.yml (S3 + AI) then SSM deploy to Application VM.
+#
+# Settings → CI/CD → General pipelines → CI/CD configuration file:
+#   Monorepo:  sample-node-app/.gitlab-ci.deploy-app.yml
+#   App-only:  .gitlab-ci.deploy-app.yml
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+stages:
+  - build
+  - test
+  - ai-tests
+  - package
+  - sonarqube
+  - ai-review
+  - publish
+  - deploy
+  - ai-deploy
+
+variables:
+  TARBALL_NAME: "sonarqube-node-demo-1.0.0.tgz"
+  SONAR_PROJECT_KEY: "sonarqube-node-demo"
+  AWS_REGION: "us-east-1"
+  AWS_DEFAULT_REGION: "us-east-1"
+  AI_OUT_DIR: "$CI_PROJECT_DIR/ai-review"
+  WORKSPACE: "$CI_PROJECT_DIR"
+  npm_config_cache: "$CI_PROJECT_DIR/.npm"
+  FF_USE_FASTZIP: "true"
+
+.resolve_app: &resolve_app |
+  set -euo pipefail
+  cd "${CI_PROJECT_DIR}"
+  if [ -f sample-node-app/package.json ]; then
+    export APP_DIR=sample-node-app
+  elif [ -f package.json ]; then
+    export APP_DIR=.
+  else
+    echo "Neither sample-node-app/package.json nor package.json found"; exit 1
+  fi
+  if [ -f ci/ai/ai-review.sh ]; then
+    export AI_SCRIPT="${CI_PROJECT_DIR}/ci/ai/ai-review.sh"
+  elif [ -f "${APP_DIR}/ci/ai/ai-review.sh" ]; then
+    export AI_SCRIPT="${CI_PROJECT_DIR}/${APP_DIR}/ci/ai/ai-review.sh"
+  else
+    export AI_SCRIPT=
+  fi
+  export AI_OUT_DIR="${CI_PROJECT_DIR}/ai-review"
+  export WORKSPACE="${CI_PROJECT_DIR}"
+  export AWS_DEFAULT_REGION="${AWS_REGION:-us-east-1}"
+  mkdir -p sample-node-app/reports/junit reports/junit sample-node-app/coverage coverage sample-node-app/node_modules node_modules ai-review
+  echo "APP_DIR=${APP_DIR} AI_SCRIPT=${AI_SCRIPT:-'(not found)'}"
+
+.install_aws: &install_aws |
+  apt-get update -qq && apt-get install -y -qq curl unzip ca-certificates git >/dev/null
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install -i /usr/local/aws-cli -b /usr/local/bin
+
+default:
+  image: node:20
+  interruptible: true
+  cache:
+    key: "npm-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .npm/
+
+build:
+  stage: build
+  script:
+    - *resolve_app
+    - cd "${APP_DIR}" && npm ci
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - sample-node-app/node_modules/
+      - node_modules/
+
+test:
+  stage: test
+  needs: [build]
+  script:
+    - *resolve_app
+    - cd "${APP_DIR}" && npm run test:ci
+  allow_failure: true
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit:
+        - sample-node-app/reports/junit/*.xml
+        - reports/junit/*.xml
+    paths:
+      - sample-node-app/reports/
+      - sample-node-app/coverage/
+      - sample-node-app/node_modules/
+      - reports/
+      - coverage/
+      - node_modules/
+
+.ai_job: &ai_job
+  image: python:3.12-slim
+  allow_failure: true
+  before_script:
+    - *install_aws
+
+ai:tests:
+  <<: *ai_job
+  stage: ai-tests
+  needs:
+    - job: test
+      artifacts: true
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${AI_SCRIPT}" ]; then echo "AI script not found; skipping"; exit 0; fi
+      mkdir -p "${AI_OUT_DIR}"
+      chmod +x "${AI_SCRIPT}"
+      "${AI_SCRIPT}" tests || true
+  artifacts:
+    when: always
+    paths: [ai-review/]
+    expire_in: 1 week
+
+package:
+  stage: package
+  needs:
+    - job: test
+      artifacts: true
+    - job: ai:tests
+      artifacts: true
+      optional: true
+  script:
+    - *resolve_app
+    - |
+      cd "${APP_DIR}"
+      rm -rf node_modules
+      npm ci --omit=dev
+      tar -czf "${TARBALL_NAME}" \
+        package.json package-lock.json app.js routes services utils node_modules
+      test -f "${TARBALL_NAME}"
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - sample-node-app/${TARBALL_NAME}
+      - sample-node-app/reports/
+      - ${TARBALL_NAME}
+      - reports/
+      - ai-review/
+
+sonarqube:
+  stage: sonarqube
+  image:
+    name: sonarsource/sonar-scanner-cli:11
+    entrypoint: [""]
+  needs:
+    - job: package
+      artifacts: true
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
+    GIT_DEPTH: "0"
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${SONAR_HOST_URL}" ] || [ -z "${SONAR_TOKEN}" ]; then
+        echo "SONAR_HOST_URL and SONAR_TOKEN must be set as CI/CD variables."; exit 1
+      fi
+      cd "${APP_DIR}"
+      sonar-scanner \
+        -Dsonar.host.url="${SONAR_HOST_URL}" \
+        -Dsonar.token="${SONAR_TOKEN}" \
+        -Dsonar.projectKey="${SONAR_PROJECT_KEY:-sonarqube-node-demo}"
+  allow_failure: true
+  rules:
+    - if: $SONAR_HOST_URL && $SONAR_TOKEN
+
+ai:sonar:
+  <<: *ai_job
+  stage: ai-review
+  needs:
+    - job: sonarqube
+      optional: true
+    - job: package
+      artifacts: true
+    - job: ai:tests
+      artifacts: true
+      optional: true
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${AI_SCRIPT}" ]; then echo "AI script not found; skipping"; exit 0; fi
+      mkdir -p "${AI_OUT_DIR}"
+      chmod +x "${AI_SCRIPT}"
+      "${AI_SCRIPT}" sonar || true
+  artifacts:
+    when: always
+    paths: [ai-review/]
+    expire_in: 1 week
+
+ai:change:
+  <<: *ai_job
+  stage: ai-review
+  needs:
+    - job: package
+      artifacts: true
+    - job: ai:sonar
+      artifacts: true
+      optional: true
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${AI_SCRIPT}" ]; then echo "AI script not found; skipping"; exit 0; fi
+      mkdir -p "${AI_OUT_DIR}"
+      chmod +x "${AI_SCRIPT}"
+      "${AI_SCRIPT}" change || true
+  artifacts:
+    when: always
+    paths: [ai-review/]
+    expire_in: 1 week
+
+publish:s3:
+  stage: publish
+  image:
+    name: amazon/aws-cli:2.22.35
+    entrypoint: [""]
+  needs:
+    - job: package
+      artifacts: true
+    - job: ai:change
+      artifacts: true
+      optional: true
+    - job: ai:sonar
+      artifacts: true
+      optional: true
+    - job: ai:tests
+      artifacts: true
+      optional: true
+  script:
+    - |
+      set -euo pipefail
+      cd "${CI_PROJECT_DIR}"
+      if [ -z "${S3_BUCKET:-}" ]; then
+        echo "S3_BUCKET must be set as a CI/CD variable"; exit 1
+      fi
+      if [ -f sample-node-app/package.json ]; then APP_DIR=sample-node-app; else APP_DIR=.; fi
+      export AWS_DEFAULT_REGION="${AWS_REGION:-us-east-1}"
+      S3_PREFIX="sample-node-app/${CI_PIPELINE_IID}"
+      echo "S3_PREFIX=${S3_PREFIX}" > "${CI_PROJECT_DIR}/deploy.env"
+      aws sts get-caller-identity
+      test -f "${APP_DIR}/${TARBALL_NAME}"
+      aws s3 cp "${APP_DIR}/${TARBALL_NAME}" "s3://${S3_BUCKET}/${S3_PREFIX}/" --only-show-errors
+      if [ -d "${APP_DIR}/reports/junit" ]; then
+        aws s3 cp "${APP_DIR}/reports/junit/" "s3://${S3_BUCKET}/${S3_PREFIX}/junit/" --recursive --only-show-errors
+      fi
+      if [ -d "${CI_PROJECT_DIR}/ai-review" ]; then
+        aws s3 cp "${CI_PROJECT_DIR}/ai-review/" "s3://${S3_BUCKET}/${S3_PREFIX}/ai-review/" --recursive --only-show-errors
+      fi
+      aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/"
+  artifacts:
+    when: always
+    reports:
+      dotenv: deploy.env
+    paths:
+      - ai-review/
+      - deploy.env
+    expire_in: 1 week
+
+deploy:ssm:
+  stage: deploy
+  image:
+    name: amazon/aws-cli:2.22.35
+    entrypoint: [""]
+  needs:
+    - job: publish:s3
+      artifacts: true
+  script:
+    - |
+      set -euo pipefail
+      cd "${CI_PROJECT_DIR}"
+      if [ -f sample-node-app/package.json ]; then APP_DIR=sample-node-app; else APP_DIR=.; fi
+      export AWS_DEFAULT_REGION="${AWS_REGION:-us-east-1}"
+      S3_PREFIX="${S3_PREFIX:-sample-node-app/${CI_PIPELINE_IID}}"
+      DEPLOY_SCRIPT="${APP_DIR}/ci/deploy-app.sh"
+      mkdir -p "${CI_PROJECT_DIR}/ai-review"
+      test -f "${DEPLOY_SCRIPT}"
+      aws s3 cp "${DEPLOY_SCRIPT}" "s3://${S3_BUCKET}/${S3_PREFIX}/deploy-app.sh" --only-show-errors
+
+      INSTANCE_ID="${APP_INSTANCE_ID:-}"
+      if [ -z "${INSTANCE_ID}" ]; then
+        INSTANCE_ID="$(aws ec2 describe-instances \
+          --filters "Name=tag:Role,Values=app" "Name=instance-state-name,Values=running" \
+          --query 'Reservations[0].Instances[0].InstanceId' \
+          --output text)"
+      fi
+      if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "None" ]; then
+        echo "No running EC2 instance with tag Role=app found. Set APP_INSTANCE_ID or check deploy-vm."
+        printf '%s\n' '{"target":"ssm","error":"no app instance"}' > "${CI_PROJECT_DIR}/ai-review/deploy-diagnostics.json"
+        exit 1
+      fi
+      echo "Deploying to instance ${INSTANCE_ID}"
+
+      cat > /tmp/ssm-deploy-params.json <<EOF
+      {
+        "commands": [
+          "export S3_BUCKET=${S3_BUCKET}",
+          "export S3_PREFIX=${S3_PREFIX}",
+          "export TARBALL_NAME=${TARBALL_NAME}",
+          "export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}",
+          "aws s3 cp s3://${S3_BUCKET}/${S3_PREFIX}/deploy-app.sh /tmp/deploy-app.sh --only-show-errors",
+          "chmod +x /tmp/deploy-app.sh",
+          "/tmp/deploy-app.sh"
+        ]
+      }
+      EOF
+
+      COMMAND_ID="$(aws ssm send-command \
+        --instance-ids "${INSTANCE_ID}" \
+        --document-name "AWS-RunShellScript" \
+        --comment "sample-node-app deploy pipeline ${CI_PIPELINE_IID}" \
+        --timeout-seconds 600 \
+        --parameters file:///tmp/ssm-deploy-params.json \
+        --query 'Command.CommandId' \
+        --output text)"
+
+      echo "SSM CommandId=${COMMAND_ID}"
+      if ! aws ssm wait command-executed --command-id "${COMMAND_ID}" --instance-id "${INSTANCE_ID}"; then
+        aws ssm get-command-invocation \
+          --command-id "${COMMAND_ID}" --instance-id "${INSTANCE_ID}" \
+          --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
+          --output json | tee "${CI_PROJECT_DIR}/ai-review/deploy-diagnostics.json" || true
+        exit 1
+      fi
+      STATUS="$(aws ssm get-command-invocation \
+        --command-id "${COMMAND_ID}" --instance-id "${INSTANCE_ID}" \
+        --query 'Status' --output text)"
+      aws ssm get-command-invocation \
+        --command-id "${COMMAND_ID}" --instance-id "${INSTANCE_ID}" \
+        --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
+        --output json | tee "${CI_PROJECT_DIR}/ai-review/deploy-diagnostics.json"
+      if [ "${STATUS}" != "Success" ]; then
+        echo "SSM command status was ${STATUS}, expected Success"
+        exit 1
+      fi
+      echo "Deploy succeeded on ${INSTANCE_ID}"
+  artifacts:
+    when: always
+    paths:
+      - ai-review/
+    expire_in: 1 week
+
+ai:deploy:
+  <<: *ai_job
+  stage: ai-deploy
+  needs:
+    - job: deploy:ssm
+      artifacts: true
+  when: on_failure
+  script:
+    - *resolve_app
+    - |
+      if [ -z "${AI_SCRIPT}" ]; then echo "AI script not found; skipping AI Deploy RCA"; exit 0; fi
+      export AI_DEPLOY_DIAG="${CI_PROJECT_DIR}/ai-review/deploy-diagnostics.json"
+      mkdir -p "${AI_OUT_DIR}"
+      chmod +x "${AI_SCRIPT}"
+      "${AI_SCRIPT}" deploy || true
+  artifacts:
+    when: always
+    paths: [ai-review/]
+    expire_in: 1 week

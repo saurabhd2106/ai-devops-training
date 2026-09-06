@@ -44,6 +44,8 @@ terraform apply
 
 ### Customize models
 
+Lab default is **Amazon Nova Lite** (used by Jenkins AI stages):
+
 ```hcl
 models = {
   nova_lite = {
@@ -51,24 +53,10 @@ models = {
     inference_profile = "us.amazon.nova-lite-v1:0"
     accept_agreement  = false
   }
-  titan_embed = {
-    model_id         = "amazon.titan-embed-text-v2:0"
-    accept_agreement = false
-  }
-  claude_sonnet = {
-    model_id          = "anthropic.claude-sonnet-4-20250514-v1:0"
-    inference_profile = "us.anthropic.claude-sonnet-4-20250514-v1:0"
-    accept_agreement  = true
-  }
-  claude_haiku = {
-    model_id          = "anthropic.claude-haiku-4-5-20251001-v1:0"
-    inference_profile = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-    accept_agreement  = true
-  }
 }
 ```
 
-Anthropic models require `accept_agreement = true` and typically `enable_anthropic_use_case = true` on first use.
+Third-party models (e.g. Anthropic Claude) need `accept_agreement = true` and typically `enable_anthropic_use_case = true` on first use — optional and out of scope for this lab.
 
 Enable the Guardrail:
 
@@ -118,7 +106,7 @@ terraform destroy
 | `aws_region` | no | `us-east-1` | AWS region |
 | `project_name` | no | `deploy-bedrock` | Tag / name prefix |
 | `environment` | no | `development` | `development` \| `staging` \| `production` \| `testing` |
-| `models` | no | nova_lite + titan_embed | Map of model IDs / optional inference profiles / agreements |
+| `models` | no | nova_lite | Map of model IDs / optional inference profiles / agreements |
 | `enable_invocation_logging` | no | `true` | CloudWatch invocation logging (regional singleton) |
 | `log_retention_days` | no | `14` | CloudWatch Logs retention |
 | `enable_guardrail` | no | `false` | Create a content + profanity Guardrail |
