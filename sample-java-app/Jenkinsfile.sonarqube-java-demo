@@ -107,9 +107,7 @@ pipeline {
                                   -e SONAR_TOKEN \
                                   -w /workspace \
                                   "$MAVEN_IMAGE" \
-                                  mvn -B sonar:sonar \
-                                    -Dsonar.host.url="$SONAR_HOST_URL" \
-                                    -Dsonar.token="$SONAR_TOKEN"
+                                  mvn -B sonar:sonar
                             '''
                         }
                     }
