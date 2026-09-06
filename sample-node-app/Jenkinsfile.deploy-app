@@ -20,6 +20,7 @@ pipeline {
         PATH = "/opt/sonar-scanner/bin:${env.PATH}"
         SONAR_TOKEN = credentials('sonarqube-token')
         TARBALL_NAME = 'sonarqube-node-demo-1.0.0.tgz'
+        SONAR_PROJECT_KEY = 'sonarqube-node-demo'
     }
 
     options {
@@ -40,6 +41,14 @@ pipeline {
                         error('Neither sample-node-app/package.json nor package.json found in workspace')
                     }
                     echo "Using application directory: ${env.APP_DIR}"
+                    if (fileExists('ci/ai/ai-review.sh')) {
+                        env.AI_SCRIPT = 'ci/ai/ai-review.sh'
+                    } else if (fileExists("${env.APP_DIR}/ci/ai/ai-review.sh")) {
+                        env.AI_SCRIPT = "${env.APP_DIR}/ci/ai/ai-review.sh"
+                    } else {
+                        env.AI_SCRIPT = ''
+                    }
+                    echo "AI script: ${env.AI_SCRIPT ?: '(not found)'}"
                 }
                 sh '''
                     command -v node >/dev/null || { echo "node not found on PATH (expected nodejs20 from install-jenkins)"; exit 1; }
@@ -78,6 +87,23 @@ pipeline {
             }
         }
 
+        stage('AI Test Review') {
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    script {
+                        if (!env.AI_SCRIPT?.trim()) {
+                            echo 'AI script not found; skipping AI Test Review'
+                            return
+                        }
+                        def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                        withEnv(["APP_DIR=${env.APP_DIR}", "AWS_DEFAULT_REGION=${region}"]) {
+                            sh 'chmod +x "${AI_SCRIPT}" && "${AI_SCRIPT}" tests'
+                        }
+                    }
+                }
+            }
+        }
+
         stage('Package') {
             steps {
                 dir(env.APP_DIR) {
@@ -111,6 +137,40 @@ pipeline {
             }
         }
 
+        stage('AI Quality Review') {
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    script {
+                        if (!env.AI_SCRIPT?.trim()) {
+                            echo 'AI script not found; skipping AI Quality Review'
+                            return
+                        }
+                        def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                        withEnv(["APP_DIR=${env.APP_DIR}", "AWS_DEFAULT_REGION=${region}"]) {
+                            sh 'chmod +x "${AI_SCRIPT}" && "${AI_SCRIPT}" sonar'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('AI Change Risk') {
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    script {
+                        if (!env.AI_SCRIPT?.trim()) {
+                            echo 'AI script not found; skipping AI Change Risk'
+                            return
+                        }
+                        def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                        withEnv(["APP_DIR=${env.APP_DIR}", "AWS_DEFAULT_REGION=${region}"]) {
+                            sh 'chmod +x "${AI_SCRIPT}" && "${AI_SCRIPT}" change'
+                        }
+                    }
+                }
+            }
+        }
+
         stage('Publish artefacts') {
             steps {
                 dir(env.APP_DIR) {
@@ -136,6 +196,11 @@ pipeline {
                                     "s3://${S3_BUCKET}/${S3_PREFIX}/junit/" \
                                     --recursive --only-show-errors
                                 fi
+                                if [ -d "${WORKSPACE}/ai-review" ]; then
+                                  aws s3 cp "${WORKSPACE}/ai-review/" \
+                                    "s3://${S3_BUCKET}/${S3_PREFIX}/ai-review/" \
+                                    --recursive --only-show-errors
+                                fi
                                 aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/"
                             '''
                         }
@@ -158,6 +223,7 @@ pipeline {
                     withEnv(["AWS_DEFAULT_REGION=${region}", "S3_BUCKET=${bucket}", "S3_PREFIX=${prefix}", "DEPLOY_SCRIPT=${deployScript}"]) {
                         sh '''
                             set -euo pipefail
+                            mkdir -p "${WORKSPACE}/ai-review"
                             test -f "${DEPLOY_SCRIPT}"
                             aws s3 cp "${DEPLOY_SCRIPT}" \
                               "s3://${S3_BUCKET}/${S3_PREFIX}/deploy-app.sh" \
@@ -172,6 +238,7 @@ pipeline {
                             fi
                             if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "None" ]; then
                               echo "No running EC2 instance with tag Role=app found. Set APP_INSTANCE_ID or check deploy-vm."
+                              printf '%s\n' '{"target":"ssm","error":"no app instance"}' > "${WORKSPACE}/ai-review/deploy-diagnostics.json"
                               exit 1
                             fi
                             echo "Deploying to instance ${INSTANCE_ID}"
@@ -208,7 +275,7 @@ EOF
                                 --command-id "${COMMAND_ID}" \
                                 --instance-id "${INSTANCE_ID}" \
                                 --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
-                                --output json || true
+                                --output json | tee "${WORKSPACE}/ai-review/deploy-diagnostics.json" || true
                               exit 1
                             fi
 
@@ -221,7 +288,7 @@ EOF
                               --command-id "${COMMAND_ID}" \
                               --instance-id "${INSTANCE_ID}" \
                               --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
-                              --output json
+                              --output json | tee "${WORKSPACE}/ai-review/deploy-diagnostics.json"
                             if [ "${STATUS}" != "Success" ]; then
                               echo "SSM command status was ${STATUS}, expected Success"
                               exit 1
@@ -235,7 +302,26 @@ EOF
     }
 
     post {
+        failure {
+            catchError(buildResult: 'FAILURE', stageResult: 'UNSTABLE') {
+                script {
+                    if (!env.AI_SCRIPT?.trim()) {
+                        echo 'AI script not found; skipping AI Deploy RCA'
+                        return
+                    }
+                    def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                    withEnv([
+                        "APP_DIR=${env.APP_DIR}",
+                        "AWS_DEFAULT_REGION=${region}",
+                        "AI_DEPLOY_DIAG=${env.WORKSPACE}/ai-review/deploy-diagnostics.json",
+                    ]) {
+                        sh 'chmod +x "${AI_SCRIPT}" && "${AI_SCRIPT}" deploy || true'
+                    }
+                }
+            }
+        }
         always {
+            archiveArtifacts artifacts: 'ai-review/**', allowEmptyArchive: true
             cleanWs(deleteDirs: true, notFailBuild: true)
         }
     }

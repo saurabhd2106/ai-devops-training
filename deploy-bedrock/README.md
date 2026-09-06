@@ -91,6 +91,16 @@ aws iam attach-role-policy \
   --policy-arn "$(terraform output -raw invoke_policy_arn)"
 ```
 
+**Jenkins lab path:** prefer attaching via [`deploy-vm`](../deploy-vm) rather than a one-off CLI attach:
+
+```bash
+# In deploy-vm/terraform.tfvars:
+#   bedrock_invoke_policy_arn = "<terraform -chdir=../deploy-bedrock output -raw invoke_policy_arn>"
+terraform -chdir=../deploy-vm apply
+```
+
+Sample Java/Node Jenkinsfiles then call [`ci/ai/ai-review.sh`](../ci/ai/README.md) (Bedrock Converse) for advisory test, Sonar, change-risk, and deploy RCA stages.
+
 Then invoke Bedrock with the AWS CLI or SDK (Terraform will not call models for you).
 
 ## Destroy
@@ -158,5 +168,5 @@ Local state is used by default. Uncomment and configure the S3 backend in `versi
 - Knowledge Bases, Agents, Flows, or Data Automation
 - OpenSearch Serverless / Pinecone / Aurora vector stores
 - Fine-tuning, custom model import, or Provisioned Throughput
-- Attaching the IAM policy to deploy-vm / ECS / EKS roles (attach the output ARN yourself)
+- Attaching the IAM policy to ECS / EKS task roles (attach the output ARN yourself; Jenkins uses `deploy-vm` `bedrock_invoke_policy_arn`)
 - VPC interface endpoints for Bedrock

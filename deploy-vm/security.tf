@@ -127,6 +127,13 @@ resource "aws_iam_role_policy_attachment" "eks_deploy" {
   policy_arn = var.eks_deploy_policy_arn
 }
 
+resource "aws_iam_role_policy_attachment" "bedrock_invoke" {
+  count = var.bedrock_invoke_policy_arn != null ? 1 : 0
+
+  role       = aws_iam_role.instance.name
+  policy_arn = var.bedrock_invoke_policy_arn
+}
+
 resource "aws_iam_instance_profile" "instance" {
   name_prefix = "${var.project_name}-${var.environment}-"
   role        = aws_iam_role.instance.name

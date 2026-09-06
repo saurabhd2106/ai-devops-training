@@ -60,6 +60,7 @@ pipeline {
         IMAGE_NAME = 'sonarqube-java-demo'
         JAR_NAME = 'sonarqube-java-demo-0.0.1-SNAPSHOT.jar'
         SONAR_TOKEN = credentials('sonarqube-token')
+        SONAR_PROJECT_KEY = 'sonarqube-java-demo'
     }
 
     stages {
@@ -74,7 +75,15 @@ pipeline {
                     } else {
                         error 'Could not find pom.xml (expected sample-java-app or job rooted at that folder)'
                     }
-                    echo "Using application directory: ${env.APP_DIR}"
+                                        echo "Using application directory: ${env.APP_DIR}"
+                    if (fileExists('ci/ai/ai-review.sh')) {
+                        env.AI_SCRIPT = 'ci/ai/ai-review.sh'
+                    } else if (fileExists("${env.APP_DIR}/ci/ai/ai-review.sh")) {
+                        env.AI_SCRIPT = "${env.APP_DIR}/ci/ai/ai-review.sh"
+                    } else {
+                        env.AI_SCRIPT = ''
+                    }
+                    echo "AI script: ${env.AI_SCRIPT ?: '(not found)'}"
                 }
                 sh '''
                     command -v docker >/dev/null || { echo "docker not found on PATH"; exit 1; }
@@ -126,6 +135,24 @@ pipeline {
             }
         }
 
+        
+        stage('AI Test Review') {
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    script {
+                        if (!env.AI_SCRIPT?.trim()) {
+                            echo 'AI script not found; skipping AI Test Review'
+                            return
+                        }
+                        def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                        withEnv(["APP_DIR=${env.APP_DIR}", "AWS_DEFAULT_REGION=${region}"]) {
+                            sh 'chmod +x "${AI_SCRIPT}" && "${AI_SCRIPT}" tests'
+                        }
+                    }
+                }
+            }
+        }
+
         stage('SonarQube') {
             steps {
                 dir("${APP_DIR}") {
@@ -145,6 +172,41 @@ pipeline {
                           "$MAVEN_IMAGE" \
                           mvn -B sonar:sonar
                     '''
+                }
+            }
+        }
+
+        
+        stage('AI Quality Review') {
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    script {
+                        if (!env.AI_SCRIPT?.trim()) {
+                            echo 'AI script not found; skipping AI Quality Review'
+                            return
+                        }
+                        def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                        withEnv(["APP_DIR=${env.APP_DIR}", "AWS_DEFAULT_REGION=${region}"]) {
+                            sh 'chmod +x "${AI_SCRIPT}" && "${AI_SCRIPT}" sonar'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('AI Change Risk') {
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    script {
+                        if (!env.AI_SCRIPT?.trim()) {
+                            echo 'AI script not found; skipping AI Change Risk'
+                            return
+                        }
+                        def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                        withEnv(["APP_DIR=${env.APP_DIR}", "AWS_DEFAULT_REGION=${region}"]) {
+                            sh 'chmod +x "${AI_SCRIPT}" && "${AI_SCRIPT}" change'
+                        }
+                    }
                 }
             }
         }
@@ -211,6 +273,7 @@ pipeline {
                     ]) {
                         sh '''
                             set -euo pipefail
+                            mkdir -p "${WORKSPACE}/ai-review"
 
                             aws sts get-caller-identity
                             aws ecs describe-clusters --clusters "${ECS_CLUSTER}" \
@@ -278,23 +341,28 @@ print(json.dumps(td))
                               NOW=$(date +%s)
                               if [ "${NOW}" -ge "${DEADLINE}" ]; then
                                 echo "Timed out waiting for ECS service to stabilize. Current deployments:"
-                                aws ecs describe-services \
-                                  --cluster "${ECS_CLUSTER}" \
-                                  --services "${ECS_SERVICE}" \
-                                  --query 'services[0].deployments' --output json || true
-                                echo "Recent stopped tasks:"
-                                STOPPED=$(aws ecs list-tasks \
-                                  --cluster "${ECS_CLUSTER}" \
-                                  --service-name "${ECS_SERVICE}" \
-                                  --desired-status STOPPED \
-                                  --query 'taskArns[0:3]' --output text)
-                                if [ -n "${STOPPED}" ] && [ "${STOPPED}" != "None" ]; then
-                                  aws ecs describe-tasks \
+                                mkdir -p "${WORKSPACE}/ai-review"
+                                {
+                                  echo "{\"target\":\"ecs\",\"cluster\":\"${ECS_CLUSTER}\",\"service\":\"${ECS_SERVICE}\",\"error\":\"stabilize timeout\"}"
+                                  echo "--- deployments ---"
+                                  aws ecs describe-services \
                                     --cluster "${ECS_CLUSTER}" \
-                                    --tasks ${STOPPED} \
-                                    --query 'tasks[*].{stoppedReason:stoppedReason,stopCode:stopCode,taskDef:taskDefinitionArn}' \
-                                    --output json || true
-                                fi
+                                    --services "${ECS_SERVICE}" \
+                                    --query 'services[0].deployments' --output json || true
+                                  echo "--- stopped tasks ---"
+                                  STOPPED=$(aws ecs list-tasks \
+                                    --cluster "${ECS_CLUSTER}" \
+                                    --service-name "${ECS_SERVICE}" \
+                                    --desired-status STOPPED \
+                                    --query 'taskArns[0:3]' --output text)
+                                  if [ -n "${STOPPED}" ] && [ "${STOPPED}" != "None" ]; then
+                                    aws ecs describe-tasks \
+                                      --cluster "${ECS_CLUSTER}" \
+                                      --tasks ${STOPPED} \
+                                      --query 'tasks[*].{stoppedReason:stoppedReason,stopCode:stopCode,taskDef:taskDefinitionArn}' \
+                                      --output json || true
+                                  fi
+                                } | tee "${WORKSPACE}/ai-review/deploy-diagnostics.json"
                                 exit 1
                               fi
 
@@ -328,7 +396,27 @@ sys.exit(0 if ok else 1)
     }
 
     post {
+        failure {
+            catchError(buildResult: 'FAILURE', stageResult: 'UNSTABLE') {
+                script {
+                    if (!env.AI_SCRIPT?.trim()) {
+                        echo 'AI script not found; skipping AI Deploy RCA'
+                        return
+                    }
+                    def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                    withEnv([
+                        "APP_DIR=${env.APP_DIR}",
+                        "AWS_DEFAULT_REGION=${region}",
+                        "AI_DEPLOY_DIAG=${env.WORKSPACE}/ai-review/deploy-diagnostics.json",
+                    ]) {
+                        sh 'chmod +x "${AI_SCRIPT}" && "${AI_SCRIPT}" deploy || true'
+                    }
+                }
+            }
+        }
+
         always {
+            archiveArtifacts artifacts: 'ai-review/**', allowEmptyArchive: true
             cleanWs(deleteDirs: true, notFailBuild: true)
         }
     }

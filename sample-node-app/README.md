@@ -69,6 +69,8 @@ Node 20 is installed by [`install-jenkins`](../install-jenkins) (`nodejs20` on P
    - `SONAR_HOST_URL` = `http://<sonarqube-private-ip>:9000`
    - `S3_BUCKET` = `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`
    - `APP_INSTANCE_ID` (optional) = app instance ID from `deploy-vm`
+   - `BEDROCK_MODEL_ID` (optional) = `us.amazon.nova-lite-v1:0` for advisory AI stages ([`ci/ai`](../ci/ai/README.md)); requires `deploy-bedrock` + `bedrock_invoke_policy_arn` on `deploy-vm`
+   - `BEDROCK_GUARDRAIL_ID` (optional) when Guardrail is enabled in `deploy-bedrock`
 3. **Save**
 
 #### Pipeline jobs
@@ -91,12 +93,15 @@ Declarative pipeline: [`Jenkinsfile`](Jenkinsfile).
 
 | Stage | What it does |
 |-------|----------------|
-| Checkout | SCM checkout; resolves `sample-node-app/` vs app-only root; fails early if `node`, `npm`, or `aws` is missing |
+| Checkout | SCM checkout; resolves `sample-node-app/` vs app-only root; resolves `ci/ai/ai-review.sh`; fails early if `node`, `npm`, or `aws` is missing |
 | Build | `npm ci` |
 | Test | `npm run test:ci` (intentional failing test → **UNSTABLE**) + JUnit / coverage artefacts |
+| AI Test Review | Bedrock explains Jest/JUnit results (advisory; never fails the job) |
 | Package | Production `npm ci --omit=dev` + tarball `sonarqube-node-demo-1.0.0.tgz` |
 | SonarQube Scan | `sonar-scanner`; **UNSTABLE** on failure so S3 publish still runs |
-| Publish artefacts | Jenkins archive + upload tarball/junit to S3 |
+| AI Quality Review | Bedrock explains unresolved Sonar issues (advisory) |
+| AI Change Risk | Bedrock summarizes recent commits / diff (advisory) |
+| Publish artefacts | Jenkins archive + upload tarball/junit/`ai-review` to S3 |
 
 Artefacts:
 
@@ -116,8 +121,9 @@ Declarative pipeline: [`Jenkinsfile.deploy-app`](Jenkinsfile.deploy-app). Same s
 
 | Stage | What it does |
 |-------|----------------|
-| Checkout → Publish artefacts | Same as [`Jenkinsfile`](Jenkinsfile) |
-| Deploy to Application VM | Upload [`ci/deploy-app.sh`](ci/deploy-app.sh) to S3; resolve app EC2 (`APP_INSTANCE_ID` or tag `Role=app`); SSM runs the script so the VM pulls the tarball, installs Node 20 if needed, writes systemd unit `sample-node-app` on port **80**, health-checks `/health` |
+| Checkout → Publish artefacts | Same as [`Jenkinsfile`](Jenkinsfile) (including advisory AI stages) |
+| Deploy to Application VM | Upload [`ci/deploy-app.sh`](ci/deploy-app.sh) to S3; resolve app EC2 (`APP_INSTANCE_ID` or tag `Role=app`); SSM runs the script so the VM pulls the tarball, installs Node 20 if needed, writes systemd unit `sample-node-app` on port **80**, health-checks `/health`; writes SSM diagnostics under `ai-review/` |
+| post failure | **AI Deploy RCA** — Bedrock explains failed SSM deploy (advisory) |
 
 Verify: `http://<app-public-ip>/health`
 
@@ -129,9 +135,11 @@ Declarative pipeline: [`Jenkinsfile.sonarqube-node-demo`](Jenkinsfile.sonarqube-
 
 | Stage | What it does |
 |-------|----------------|
-| Checkout | Fails early if `docker` or `aws` is missing |
+| Checkout | Fails early if `docker` or `aws` is missing; resolves AI script |
 | Build / Test | `node:20` Docker image + Jest (**UNSTABLE** on intentional failure) |
+| AI Test Review | Bedrock explains Jest results (advisory) |
 | SonarQube | `sonarsource/sonar-scanner-cli` |
+| AI Quality Review / AI Change Risk | Bedrock advisory Sonar explanation and change summary |
 | Publish | `docker build` / push `${BUILD_NUMBER}` and `latest` to `deploy-ecr/sonarqube-node-demo` |
 
 ### Prerequisites
@@ -146,8 +154,9 @@ Declarative pipeline: [`Jenkinsfile.ecs`](Jenkinsfile.ecs).
 
 | Stage | What it does |
 |-------|----------------|
-| Checkout → Publish ECR | Same as ECR-only job |
+| Checkout → Publish ECR | Same as ECR-only job (including advisory AI stages) |
 | Deploy ECS | Rewrite task definition image/port → `register-task-definition` → `update-service` → wait for stable |
+| post failure | **AI Deploy RCA** from ECS diagnostics (advisory) |
 
 ### Job parameters (defaults)
 
@@ -176,8 +185,9 @@ Declarative pipeline: [`Jenkinsfile.eks`](Jenkinsfile.eks). Same build / test / 
 
 | Stage | What it does |
 |-------|----------------|
-| Checkout → Publish ECR | Same as ECS job |
+| Checkout → Publish ECR | Same as ECS job (including advisory AI stages) |
 | Deploy EKS | `aws eks update-kubeconfig` → substitute image into Deployment → `kubectl apply` → rollout status → print NLB hostname |
+| post failure | **AI Deploy RCA** from EKS rollout diagnostics (advisory) |
 
 ### Job parameters (defaults)
 

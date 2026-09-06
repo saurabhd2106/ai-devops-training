@@ -133,6 +133,12 @@ variable "eks_deploy_policy_arn" {
   default     = null
 }
 
+variable "bedrock_invoke_policy_arn" {
+  description = "Optional IAM policy ARN from deploy-bedrock (invoke_policy_arn) so Jenkins/EC2 can call Bedrock Converse for advisory AI pipeline stages"
+  type        = string
+  default     = null
+}
+
 locals {
   vms = {
     for name, cfg in var.vms : name => cfg if cfg.enabled

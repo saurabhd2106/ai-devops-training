@@ -20,6 +20,17 @@ Provisions named Amazon EC2 VMs (app, SonarQube, Jenkins by default) in a dedica
 
 Terraform does **not** install Jenkins, SonarQube, or your app — only the VMs, network, and CI S3/IAM. Install Jenkins after connect with sibling [`install-jenkins`](../install-jenkins/README.md). Install SonarQube with sibling [`install-sonarqube`](../install-sonarqube/README.md). Pipeline for the Java demo: [`sample-java-app/Jenkinsfile`](../sample-java-app/Jenkinsfile).
 
+### Optional: Bedrock AI pipeline stages
+
+After [`deploy-bedrock`](../deploy-bedrock/README.md) is applied, attach its invoke policy so Jenkins can run advisory AI reviews ([`ci/ai`](../ci/ai/README.md)):
+
+```bash
+# terraform -chdir=../deploy-bedrock apply
+# then in deploy-vm terraform.tfvars:
+#   bedrock_invoke_policy_arn = "<terraform -chdir=../deploy-bedrock output -raw invoke_policy_arn>"
+terraform apply
+```
+
 ## Prerequisites
 
 - [Terraform](https://developer.hashicorp.com/terraform/install) `>= 1.5.7`
@@ -173,13 +184,14 @@ terraform destroy
 | `ecr_push_pull_policy_arn` | no | `null` | IAM policy ARN from `deploy-ecr` `push_pull_policy_arn` for Jenkins ECR push/pull |
 | `ecs_deploy_policy_arn` | no | `null` | IAM policy ARN from `deploy-ecs` `ci_deploy_policy_arn` for Jenkins ECS deploy |
 | `eks_deploy_policy_arn` | no | `null` | IAM policy ARN from `deploy-eks` `ci_deploy_policy_arn` for Jenkins EKS kubectl deploy |
+| `bedrock_invoke_policy_arn` | no | `null` | IAM policy ARN from `deploy-bedrock` `invoke_policy_arn` for Jenkins advisory AI stages (Bedrock Converse) |
 
 ## Security defaults
 
 - SSH and app/UI ports restricted to `allowed_ssh_cidr`
 - EBS root: **gp3**, **encrypted**, delete on termination
 - **IMDSv2 required**, hop limit `1`
-- Shared IAM with `AmazonSSMManagedInstanceCore`, CI S3 read/write, SSM deploy (`SendCommand` / `GetCommandInvocation`), and optional `ecr_push_pull_policy_arn` / `ecs_deploy_policy_arn` / `eks_deploy_policy_arn` for Jenkins
+- Shared IAM with `AmazonSSMManagedInstanceCore`, CI S3 read/write, SSM deploy (`SendCommand` / `GetCommandInvocation`), and optional `ecr_push_pull_policy_arn` / `ecs_deploy_policy_arn` / `eks_deploy_policy_arn` / `bedrock_invoke_policy_arn` for Jenkins
 - AMI pinned after first apply (`lifecycle.ignore_changes = [ami]`)
 
 ## Estimated monthly cost (us-east-1, On-Demand, 24/7)

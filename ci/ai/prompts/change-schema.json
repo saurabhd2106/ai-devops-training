@@ -1,0 +1,51 @@
+{
+    "type": "object",
+    "properties": {
+      "services": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "risk": {
+        "type": "string",
+        "enum": ["LOW", "MEDIUM", "HIGH"]
+      },
+      "strategy": {
+        "type": "string",
+        "enum": ["auto", "canary", "manual_approval"]
+      },
+      "rationale": { "type": "string" },
+      "summary": {
+        "type": "array",
+        "items": { "type": "string" },
+        "maxItems": 4
+      },
+      "hot_spots": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" },
+            "area": {
+              "type": "string",
+              "enum": ["deploy", "auth", "config", "iam", "container", "schema", "public_api", "messaging", "other"]
+            },
+            "note": { "type": "string" }
+          },
+          "required": ["path", "area", "note"]
+        }
+      },
+      "checklist": {
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 3,
+        "maxItems": 5
+      },
+      "injection_detected": { "type": "boolean" },
+      "anomalies": { "type": "string" },
+      "confidence": {
+        "type": "string",
+        "enum": ["high", "medium", "low"]
+      }
+    },
+    "required": ["services", "risk", "strategy", "rationale", "summary", "hot_spots", "checklist", "injection_detected", "anomalies", "confidence"]
+  }

@@ -98,6 +98,8 @@ The default [`Jenkinsfile`](Jenkinsfile) uses `PATH` (`/opt/maven/bin`, `/opt/so
    - Name: `SONAR_HOST_URL`, Value: `http://<sonarqube-private-ip>:9000`
    - Name: `S3_BUCKET`, Value: `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`
    - Name: `APP_INSTANCE_ID` (optional), Value: `terraform -chdir=../deploy-vm output -json instance_ids` → `app`. If unset, [`Jenkinsfile.deploy-app`](Jenkinsfile.deploy-app) discovers a running EC2 with tag `Role=app`.
+   - Name: `BEDROCK_MODEL_ID` (optional), Value: `us.amazon.nova-lite-v1:0` — advisory AI stages ([`ci/ai`](../ci/ai/README.md)); requires `deploy-bedrock` + `bedrock_invoke_policy_arn` on `deploy-vm`
+   - Name: `BEDROCK_GUARDRAIL_ID` (optional) — when Guardrail is enabled in `deploy-bedrock`
 3. **Save**
 
 You can also set these on a folder or individual job instead of globally.
@@ -125,12 +127,15 @@ Declarative pipeline: [`Jenkinsfile`](Jenkinsfile).
 
 | Stage | What it does |
 |-------|----------------|
-| Checkout | SCM checkout; resolves `sample-java-app/` vs app-only root; fails early if `mvn` or `aws` is missing |
+| Checkout | SCM checkout; resolves `sample-java-app/` vs app-only root; resolves `ci/ai/ai-review.sh`; fails early if `mvn` or `aws` is missing |
 | Build | `mvn -B -DskipTests compile` |
 | Test | `mvn -B test` + JUnit report publish (Surefire ignores failures for training) |
+| AI Test Review | Bedrock explains JUnit results (advisory; never fails the job) |
 | Package | `mvn -B -DskipTests package` (fat JAR for S3) |
 | SonarQube Scan | `sonar-scanner` only; marked **UNSTABLE** on failure so S3 publish still runs |
-| Publish artefacts | Jenkins `archiveArtifacts`, STS preflight, upload JAR/reports to S3, list destination prefix |
+| AI Quality Review | Bedrock explains unresolved Sonar issues (advisory) |
+| AI Change Risk | Bedrock summarizes recent commits / diff (advisory; does not gate deploy) |
+| Publish artefacts | Jenkins `archiveArtifacts`, STS preflight, upload JAR/reports/`ai-review` to S3, list destination prefix |
 
 Use the **`deploy-vm`** output `ci_artifacts_bucket` (instance role already has `s3:PutObject`). Do not point this job at a [`deploy-s3`](../deploy-s3) bucket unless that role is granted access.
 
@@ -140,8 +145,9 @@ Declarative pipeline: [`Jenkinsfile.deploy-app`](Jenkinsfile.deploy-app). Same s
 
 | Stage | What it does |
 |-------|----------------|
-| Checkout → Publish artefacts | Same as [`Jenkinsfile`](Jenkinsfile) |
-| Deploy to Application VM | Upload [`ci/deploy-app.sh`](ci/deploy-app.sh) to S3; resolve app EC2 (`APP_INSTANCE_ID` or tag `Role=app`); `ssm send-command` so the VM pulls the JAR, installs Corretto 26 if needed, writes a systemd unit on port **80**, restarts, and health-checks `http://127.0.0.1/users/echo?q=ok` |
+| Checkout → Publish artefacts | Same as [`Jenkinsfile`](Jenkinsfile) (including advisory AI stages) |
+| Deploy to Application VM | Upload [`ci/deploy-app.sh`](ci/deploy-app.sh) to S3; resolve app EC2 (`APP_INSTANCE_ID` or tag `Role=app`); `ssm send-command` so the VM pulls the JAR, installs Corretto 26 if needed, writes a systemd unit on port **80**, restarts, and health-checks `http://127.0.0.1/users/echo?q=ok`; writes SSM diagnostics under `ai-review/` |
+| post failure | **AI Deploy RCA** — Bedrock explains failed SSM deploy from diagnostics (advisory) |
 
 Verify from your allowed CIDR:
 
@@ -170,12 +176,15 @@ Declarative pipeline: [`Jenkinsfile.ecs`](Jenkinsfile.ecs). Builds with Docker M
 
 | Stage | What it does |
 |-------|----------------|
-| Checkout | SCM checkout; fails early if `docker`, `aws`, or `python3` is missing |
+| Checkout | SCM checkout; fails early if `docker`, `aws`, or `python3` is missing; resolves `ci/ai/ai-review.sh` |
 | Build | `mvn -B -DskipTests package` via `maven:3.9-eclipse-temurin-26` |
 | Test | `mvn -B test jacoco:report` + JUnit / JaCoCo artefacts |
+| AI Test Review | Bedrock explains JUnit results (advisory) |
 | SonarQube | `mvn sonar:sonar` (`SONAR_HOST_URL` + credential `sonarqube-token`) |
+| AI Quality Review / AI Change Risk | Bedrock advisory Sonar explanation and change summary |
 | Publish ECR | `docker build` / push `${BUILD_NUMBER}` and `latest` to ECR |
 | Deploy ECS | Rewrite task definition image + port → `register-task-definition` → `update-service` → poll until PRIMARY `COMPLETED` (fails with diagnostics on timeout) |
+| post failure | **AI Deploy RCA** from ECS diagnostics (advisory) |
 
 ### Job setup
 
@@ -208,12 +217,15 @@ Declarative pipeline: [`Jenkinsfile.eks`](Jenkinsfile.eks). Same build / test / 
 
 | Stage | What it does |
 |-------|----------------|
-| Checkout | SCM checkout; fails early if `docker` or `aws` is missing; uses PATH kubectl from `install-jenkins` |
+| Checkout | SCM checkout; fails early if `docker` or `aws` is missing; uses PATH kubectl from `install-jenkins`; resolves AI script |
 | Build | `mvn -B -DskipTests package` via `maven:3.9-eclipse-temurin-26` |
 | Test | `mvn -B test jacoco:report` + JUnit / JaCoCo artefacts |
+| AI Test Review | Bedrock explains JUnit results (advisory) |
 | SonarQube | `mvn sonar:sonar` (`SONAR_HOST_URL` + credential `sonarqube-token`) |
+| AI Quality Review / AI Change Risk | Bedrock advisory Sonar explanation and change summary |
 | Publish ECR | `docker build` / push `${BUILD_NUMBER}` and `latest` to ECR |
 | Deploy EKS | `aws eks update-kubeconfig` (instance role) → substitute image into Deployment → `kubectl apply` → rollout status → print NLB hostname |
+| post failure | **AI Deploy RCA** from EKS rollout diagnostics (advisory) |
 
 ### Job setup
 

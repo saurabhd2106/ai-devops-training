@@ -50,3 +50,7 @@ ssh_public_key = "ssh-ed25519 AAAA... your-comment"
 # After apply in ../deploy-eks (with ci_principal_arn), attach CI deploy for kubectl:
 #   terraform -chdir=../deploy-eks output -raw ci_deploy_policy_arn
 # eks_deploy_policy_arn = "arn:aws:iam::ACCOUNT:policy/deploy-eks-development-ci-deploy"
+#
+# After apply in ../deploy-bedrock, attach Bedrock invoke so Jenkins AI stages can call Converse:
+#   terraform -chdir=../deploy-bedrock output -raw invoke_policy_arn
+# bedrock_invoke_policy_arn = "arn:aws:iam::ACCOUNT:policy/deploy-bedrock-..."

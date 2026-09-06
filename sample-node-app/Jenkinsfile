@@ -13,6 +13,7 @@ pipeline {
         PATH = "/opt/sonar-scanner/bin:${env.PATH}"
         SONAR_TOKEN = credentials('sonarqube-token')
         TARBALL_NAME = 'sonarqube-node-demo-1.0.0.tgz'
+        SONAR_PROJECT_KEY = 'sonarqube-node-demo'
     }
 
     options {
@@ -33,6 +34,14 @@ pipeline {
                         error('Neither sample-node-app/package.json nor package.json found in workspace')
                     }
                     echo "Using application directory: ${env.APP_DIR}"
+                    if (fileExists('ci/ai/ai-review.sh')) {
+                        env.AI_SCRIPT = 'ci/ai/ai-review.sh'
+                    } else if (fileExists("${env.APP_DIR}/ci/ai/ai-review.sh")) {
+                        env.AI_SCRIPT = "${env.APP_DIR}/ci/ai/ai-review.sh"
+                    } else {
+                        env.AI_SCRIPT = ''
+                    }
+                    echo "AI script: ${env.AI_SCRIPT ?: '(not found)'}"
                 }
                 sh '''
                     command -v node >/dev/null || { echo "node not found on PATH (expected nodejs20 from install-jenkins)"; exit 1; }
@@ -71,6 +80,23 @@ pipeline {
             }
         }
 
+        stage('AI Test Review') {
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    script {
+                        if (!env.AI_SCRIPT?.trim()) {
+                            echo 'AI script not found; skipping AI Test Review'
+                            return
+                        }
+                        def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                        withEnv(["APP_DIR=${env.APP_DIR}", "AWS_DEFAULT_REGION=${region}"]) {
+                            sh 'chmod +x "${AI_SCRIPT}" && "${AI_SCRIPT}" tests'
+                        }
+                    }
+                }
+            }
+        }
+
         stage('Package') {
             steps {
                 dir(env.APP_DIR) {
@@ -104,6 +130,40 @@ pipeline {
             }
         }
 
+        stage('AI Quality Review') {
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    script {
+                        if (!env.AI_SCRIPT?.trim()) {
+                            echo 'AI script not found; skipping AI Quality Review'
+                            return
+                        }
+                        def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                        withEnv(["APP_DIR=${env.APP_DIR}", "AWS_DEFAULT_REGION=${region}"]) {
+                            sh 'chmod +x "${AI_SCRIPT}" && "${AI_SCRIPT}" sonar'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('AI Change Risk') {
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    script {
+                        if (!env.AI_SCRIPT?.trim()) {
+                            echo 'AI script not found; skipping AI Change Risk'
+                            return
+                        }
+                        def region = params.AWS_REGION?.trim() ?: 'us-east-1'
+                        withEnv(["APP_DIR=${env.APP_DIR}", "AWS_DEFAULT_REGION=${region}"]) {
+                            sh 'chmod +x "${AI_SCRIPT}" && "${AI_SCRIPT}" change'
+                        }
+                    }
+                }
+            }
+        }
+
         stage('Publish artefacts') {
             steps {
                 dir(env.APP_DIR) {
@@ -128,6 +188,11 @@ pipeline {
                                     "s3://${S3_BUCKET}/${S3_PREFIX}/junit/" \
                                     --recursive --only-show-errors
                                 fi
+                                if [ -d "${WORKSPACE}/ai-review" ]; then
+                                  aws s3 cp "${WORKSPACE}/ai-review/" \
+                                    "s3://${S3_BUCKET}/${S3_PREFIX}/ai-review/" \
+                                    --recursive --only-show-errors
+                                fi
                                 aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/"
                             '''
                         }
@@ -139,6 +204,7 @@ pipeline {
 
     post {
         always {
+            archiveArtifacts artifacts: 'ai-review/**', allowEmptyArchive: true
             cleanWs(deleteDirs: true, notFailBuild: true)
         }
     }
