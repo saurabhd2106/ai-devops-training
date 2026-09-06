@@ -24,7 +24,7 @@ pipeline {
         string(
             name: 'SONAR_HOST_URL',
             defaultValue: '',
-            description: 'Optional SonarQube URL override; leave empty to use the Jenkins SonarQube server named sonarqube'
+            description: 'SonarQube base URL (e.g. http://<sonarqube-private-ip>:9000). Required.'
         )
     }
 
@@ -32,6 +32,7 @@ pipeline {
         MAVEN_IMAGE = 'maven:3.9-eclipse-temurin-26'
         IMAGE_NAME = 'sonarqube-java-demo'
         JAR_NAME = 'sonarqube-java-demo-0.0.1-SNAPSHOT.jar'
+        SONAR_TOKEN = credentials('sonarqube-token')
     }
 
     stages {
@@ -93,35 +94,25 @@ pipeline {
             steps {
                 dir("${APP_DIR}") {
                     script {
-                        def sonarArgs = ''
-                        if (params.SONAR_HOST_URL?.trim()) {
-                            sonarArgs = "-Dsonar.host.url=${params.SONAR_HOST_URL.trim()}"
+                        if (!params.SONAR_HOST_URL?.trim()) {
+                            error 'SONAR_HOST_URL is required (e.g. http://<sonarqube-private-ip>:9000)'
                         }
-                        withSonarQubeEnv('sonarqube') {
-                            sh """
+                        withEnv(["SONAR_HOST_URL=${params.SONAR_HOST_URL.trim()}"]) {
+                            sh '''
                                 docker run --rm \
                                   --network host \
-                                  -v "\$PWD":/workspace \
-                                  -v "\$HOME/.m2":/root/.m2 \
+                                  -v "$PWD":/workspace \
+                                  -v "$HOME/.m2":/root/.m2 \
                                   -e SONAR_HOST_URL \
-                                  -e SONAR_AUTH_TOKEN \
-                                  -e SONAR_TOKEN=\$SONAR_AUTH_TOKEN \
+                                  -e SONAR_TOKEN \
                                   -w /workspace \
-                                  "\$MAVEN_IMAGE" \
+                                  "$MAVEN_IMAGE" \
                                   mvn -B sonar:sonar \
-                                    -Dsonar.token=\$SONAR_AUTH_TOKEN \
-                                    ${sonarArgs}
-                            """
+                                    -Dsonar.host.url="$SONAR_HOST_URL" \
+                                    -Dsonar.token="$SONAR_TOKEN"
+                            '''
                         }
                     }
-                }
-            }
-        }
-
-        stage('Quality Gate') {
-            steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: false
                 }
             }
         }
