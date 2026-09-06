@@ -77,26 +77,35 @@ node_disk_size      = 30
 cluster_version     = "1.34"
 ```
 
-### Wire Jenkins for kubectl deploy
+### Wire Jenkins for kubectl deploy (Terraform AuthN/AuthZ)
 
-After [`deploy-vm`](../deploy-vm) exists:
+Jenkins uses the **`deploy-vm` EC2 instance role** only — no IAM User, access keys, or manual `create-access-entry` CLI.
+
+AuthN: attach IAM policies on the instance role. AuthZ: EKS access entry for that same role ARN.
 
 ```bash
-# 1. Grant the instance role EKS cluster admin + allow Jenkins public IP on the API
+# 0. Prerequisites: deploy-vm and deploy-ecr already applied; note Jenkins public IP
 terraform -chdir=../deploy-vm output -raw instance_role_arn
 terraform -chdir=../deploy-vm output -json public_ips
-# Set in terraform.tfvars:
+
+# 1. deploy-eks — AuthZ (access entry) + allow Jenkins on the public API
+# In terraform.tfvars:
 #   ci_principal_arn     = "<instance_role_arn>"
 #   additional_api_cidrs = ["<jenkins-public-ip>/32"]
 terraform apply
 
-# 2. Attach the CI IAM policy on deploy-vm
+# 2. deploy-vm — AuthN (attach ECR + EKS CI policies to the instance role)
 terraform output -raw ci_deploy_policy_arn
-# Set eks_deploy_policy_arn in ../deploy-vm/terraform.tfvars, then:
+# In ../deploy-vm/terraform.tfvars:
+#   ecr_push_pull_policy_arn = "<from deploy-ecr>"
+#   eks_deploy_policy_arn    = "<ci_deploy_policy_arn above>"
 terraform -chdir=../deploy-vm apply
+
+# 3. install-jenkins — permanent kubectl at /usr/local/bin/kubectl
+# ansible-playbook site.yml  (from install-jenkins/)
 ```
 
-Then create a Jenkins job with Script Path `sample-java-app/Jenkinsfile.eks`.
+Then create a Jenkins job with Script Path `sample-java-app/Jenkinsfile.eks`. The agent authenticates with the instance profile via `aws eks update-kubeconfig`.
 
 ## Destroy
 
@@ -112,7 +121,7 @@ Destroy also takes ~10–15 minutes (node group, then cluster, then VPC/NAT).
 |------|----------|---------|-------------|
 | `allowed_api_cidr` | **yes** | — | CIDR for EKS public API (`/32` recommended). `0.0.0.0/0` rejected. |
 | `additional_api_cidrs` | no | `[]` | Extra API CIDRs (e.g. Jenkins public IP `/32`). `0.0.0.0/0` rejected. |
-| `ci_principal_arn` | no | `null` | IAM role ARN for EKS access entry (Jenkins instance role from `deploy-vm`) |
+| `ci_principal_arn` | no | `null` | IAM principal ARN for EKS access entry — use the Jenkins **instance role** ARN from `deploy-vm` (Terraform AuthZ; no IAM User) |
 | `aws_region` | no | `us-east-1` | AWS region |
 | `project_name` | no | `deploy-eks` | Tag / name prefix |
 | `environment` | no | `development` | `development` \| `staging` \| `production` \| `testing` |
@@ -136,7 +145,7 @@ Destroy also takes ~10–15 minutes (node group, then cluster, then VPC/NAT).
 - **IMDSv2 required**, hop limit `1`
 - Node IAM: `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, `AmazonEC2ContainerRegistryPullOnly`, `AmazonSSMManagedInstanceCore`
 - Upgrade policy: **STANDARD** (no extended-support billing)
-- Optional CI: EKS access entry (`AmazonEKSClusterAdminPolicy`) + scoped `ci_deploy` IAM policy
+- Optional CI: EKS access entry for the Jenkins **instance role** (`AmazonEKSClusterAdminPolicy`) + scoped `ci_deploy` IAM policy (Terraform only; no IAM User)
 
 ## Estimated monthly cost (us-east-1, On-Demand, 24/7)
 

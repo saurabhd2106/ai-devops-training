@@ -4,9 +4,9 @@
 //
 // Prerequisites:
 //   - SONAR_HOST_URL Jenkins env var; credential ID sonarqube-token
-//   - Docker and aws CLI on the agent (kubectl is downloaded if missing)
-//   - deploy-vm instance role: ecr_push_pull_policy_arn + eks_deploy_policy_arn
-//   - deploy-eks: ci_principal_arn = Jenkins instance role; Jenkins IP in additional_api_cidrs
+//   - Docker, aws CLI, and kubectl on the agent (kubectl from install-jenkins; curl fallback if missing)
+//   - deploy-vm instance role: ecr_push_pull_policy_arn + eks_deploy_policy_arn (Terraform)
+//   - deploy-eks: ci_principal_arn = instance role ARN; Jenkins IP in additional_api_cidrs (Terraform)
 
 pipeline {
     agent any
@@ -67,6 +67,11 @@ pipeline {
                     command -v aws >/dev/null || { echo "aws CLI not found on PATH"; exit 1; }
                     docker --version
                     aws --version
+                    if command -v kubectl >/dev/null 2>&1; then
+                      kubectl version --client
+                    else
+                      echo "kubectl not on PATH yet; Deploy EKS stage will download v${KUBECTL_VERSION} as fallback"
+                    fi
                 '''
             }
         }

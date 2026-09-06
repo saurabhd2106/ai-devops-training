@@ -116,6 +116,28 @@
     group: root
     mode: "0644"
 
+- name: Check installed kubectl version
+  ansible.builtin.command:
+    argv:
+      - "{{ jenkins_kubectl_bin }}"
+      - version
+      - --client
+      - --output=yaml
+  register: jenkins_kubectl_installed
+  changed_when: false
+  failed_when: false
+
+- name: Download kubectl binary
+  ansible.builtin.get_url:
+    url: "{{ jenkins_kubectl_download_url }}"
+    dest: "{{ jenkins_kubectl_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: >-
+    jenkins_kubectl_installed.rc != 0
+    or (jenkins_kubectl_version not in (jenkins_kubectl_installed.stdout | default('')))
+
 - name: Flush handlers so Jenkins restarts before wait
   ansible.builtin.meta: flush_handlers
 

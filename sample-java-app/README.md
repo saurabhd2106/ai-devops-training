@@ -203,17 +203,17 @@ Declarative pipeline: [`Jenkinsfile.eks`](Jenkinsfile.eks). Same build / test / 
 
 | Stage | What it does |
 |-------|----------------|
-| Checkout | SCM checkout; fails early if `docker` or `aws` is missing |
+| Checkout | SCM checkout; fails early if `docker` or `aws` is missing; uses PATH kubectl from `install-jenkins` |
 | Build | `mvn -B -DskipTests package` via `maven:3.9-eclipse-temurin-26` |
 | Test | `mvn -B test jacoco:report` + JUnit / JaCoCo artefacts |
 | SonarQube | `mvn sonar:sonar` (`SONAR_HOST_URL` + credential `sonarqube-token`) |
 | Publish ECR | `docker build` / push `${BUILD_NUMBER}` and `latest` to ECR |
-| Deploy EKS | Download kubectl if needed → `aws eks update-kubeconfig` → substitute image into Deployment → `kubectl apply` → rollout status → print NLB hostname |
+| Deploy EKS | `aws eks update-kubeconfig` (instance role) → substitute image into Deployment → `kubectl apply` → rollout status → print NLB hostname |
 
 ### Job setup
 
 1. **New Item** → Pipeline → Script Path `sample-java-app/Jenkinsfile.eks`
-2. Same `sonarqube-token` credential and `SONAR_HOST_URL` as the other jobs
+2. Same `sonarqube-token` credential and `SONAR_HOST_URL` as the other jobs (no AWS access keys; the Jenkins EC2 instance profile authenticates)
 3. Optional build parameters (defaults match Terraform naming):
 
 | Parameter | Default |
@@ -223,14 +223,25 @@ Declarative pipeline: [`Jenkinsfile.eks`](Jenkinsfile.eks). Same build / test / 
 | `EKS_CLUSTER` | `deploy-eks-development` |
 | `K8S_NAMESPACE` | `default` |
 
-### Prerequisites (ECR + EKS)
+### Prerequisites (ECR + EKS) — Terraform AuthN/AuthZ only
 
-1. Apply [`deploy-ecr`](../deploy-ecr) and attach `push_pull_policy_arn` to `deploy-vm` as `ecr_push_pull_policy_arn`.
-2. Apply [`deploy-eks`](../deploy-eks) with:
-   - `ci_principal_arn` = `terraform -chdir=../deploy-vm output -raw instance_role_arn`
-   - `additional_api_cidrs` = `["<jenkins-public-ip>/32"]` (from `public_ips.jenkins`)
-3. Attach `ci_deploy_policy_arn` from `deploy-eks` to `deploy-vm` as `eks_deploy_policy_arn`, then `terraform apply` in `deploy-vm`.
-4. Docker must be installed on the Jenkins agent (`install-jenkins` does not install Docker; same requirement as [`Jenkinsfile.ecs`](Jenkinsfile.ecs) / [`Jenkinsfile.sonarqube-java-demo`](Jenkinsfile.sonarqube-java-demo)). kubectl is downloaded by the pipeline if missing.
+AuthN and AuthZ use the **`deploy-vm` EC2 instance role** end-to-end. Do not create an IAM User, access keys, or run `aws eks create-access-entry` by hand.
+
+Apply order:
+
+1. **`deploy-ecr`**: `terraform apply`, then set `ecr_push_pull_policy_arn` on `deploy-vm` from `push_pull_policy_arn`.
+2. **`deploy-eks`**: set Terraform AuthZ for the instance role and allow Jenkins on the API:
+
+```hcl
+ci_principal_arn     = "<terraform -chdir=../deploy-vm output -raw instance_role_arn>"
+additional_api_cidrs = ["<jenkins-public-ip>/32"]  # public_ips.jenkins
+```
+
+   `terraform apply` creates the EKS access entry and associates `AmazonEKSClusterAdminPolicy`.
+3. **`deploy-vm`**: set `eks_deploy_policy_arn` from `terraform -chdir=../deploy-eks output -raw ci_deploy_policy_arn`, keep `ecr_push_pull_policy_arn`, then `terraform apply`.
+4. **`install-jenkins`**: re-run `ansible-playbook site.yml` so **kubectl** is at `/usr/local/bin/kubectl`. Docker is still required on the agent separately (not installed by Ansible).
+
+The pipeline calls `aws eks update-kubeconfig` with the instance profile; kubectl then uses that identity.
 
 After a successful deploy, open the NLB hostname printed in the build log (Service port **80** → container **8080**). Probes use TCP on 8080 (this demo app has no `/health` HTTP path).
 

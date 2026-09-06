@@ -40,6 +40,11 @@ jenkins_sonar_scanner_versioned_dir: "{{ jenkins_sonar_scanner_install_root }}/s
 jenkins_sonar_scanner_zip: "sonar-scanner-cli-{{ jenkins_sonar_scanner_version }}-linux-x64.zip"
 jenkins_sonar_scanner_download_url: "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/{{ jenkins_sonar_scanner_zip }}"
 
+# kubectl (match deploy-eks default cluster_version 1.34)
+jenkins_kubectl_version: "1.34.0"
+jenkins_kubectl_bin: /usr/local/bin/kubectl
+jenkins_kubectl_download_url: "https://dl.k8s.io/release/v{{ jenkins_kubectl_version }}/bin/linux/amd64/kubectl"
+
 # Plugins installed via jenkins-plugin-cli after first start
 jenkins_plugins_file: plugins.txt
 jenkins_plugin_cli_jar: /usr/share/java/jenkins-plugin-manager.jar

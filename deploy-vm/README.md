@@ -119,13 +119,18 @@ terraform apply
 
 ### EKS deploy (Jenkins)
 
-After [`deploy-eks`](../deploy-eks) is applied with `ci_principal_arn` and Jenkins IP in `additional_api_cidrs`, attach its CI deploy policy so Jenkins can run kubectl ([`Jenkinsfile.eks`](../sample-java-app/Jenkinsfile.eks)):
+Terraform-only AuthN/AuthZ for [`Jenkinsfile.eks`](../sample-java-app/Jenkinsfile.eks): the shared EC2 instance role is the principal (no IAM User or access keys).
+
+1. In [`deploy-eks`](../deploy-eks), set `ci_principal_arn` to this stack’s `instance_role_arn` and add the Jenkins public IP to `additional_api_cidrs`, then apply.
+2. Attach the EKS CI policy to this instance role:
 
 ```bash
 terraform -chdir=../deploy-eks output -raw ci_deploy_policy_arn
 # Set eks_deploy_policy_arn in terraform.tfvars to that ARN, then:
 terraform apply
 ```
+
+3. Re-run [`install-jenkins`](../install-jenkins) so kubectl is at `/usr/local/bin/kubectl`.
 
 Confirm with `terraform output instance_role_name` / `instance_role_arn`.
 
