@@ -121,7 +121,7 @@ terraform apply
 
 Terraform-only AuthN/AuthZ for [`Jenkinsfile.eks`](../sample-java-app/Jenkinsfile.eks): the shared EC2 instance role is the principal (no IAM User or access keys).
 
-1. In [`deploy-eks`](../deploy-eks), set `ci_principal_arn` to this stack’s `instance_role_arn` and add the Jenkins public IP to `additional_api_cidrs`, then apply.
+1. In [`deploy-eks`](../deploy-eks), set `ci_principal_arn` to this stack’s `instance_role_arn` (public API defaults to `0.0.0.0/0` for demo labs; add `additional_api_cidrs` only if you narrow `allowed_api_cidr`), then apply.
 2. Attach the EKS CI policy to this instance role:
 
 ```bash

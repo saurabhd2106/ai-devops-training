@@ -6,7 +6,7 @@ Provisions a development-sized **Amazon EKS** cluster with a dedicated multi-AZ 
 
 - Dedicated VPC (`10.20.0.0/16` by default) with **2 public + 2 private** subnets across 2 AZs
 - Internet Gateway + **1 NAT Gateway** (dev cost control; private nodes egress via NAT)
-- EKS control plane on private subnets; public API endpoint restricted to `allowed_api_cidr` (+ optional `additional_api_cidrs`)
+- EKS control plane on private subnets; public API endpoint defaults to `0.0.0.0/0` for demo labs (override `allowed_api_cidr` to lock down)
 - One managed node group (`t3.medium` x2 by default) in private subnets
 - Encrypted gp3 root volumes, IMDSv2 required, KMS encryption for Kubernetes secrets
 - Cluster upgrade policy: **STANDARD** support (avoids extended-support surcharge)
@@ -14,7 +14,7 @@ Provisions a development-sized **Amazon EKS** cluster with a dedicated multi-AZ 
 - Optional Jenkins CI: `ci_principal_arn` access entry + `ci_deploy` IAM policy for kubectl from `deploy-vm`
 
 ```
-                    ┌─ allowed_api_cidr (+ additional) ─┐
+                    ┌─ allowed_api_cidr (default 0.0.0.0/0) ─┐
 kubectl / Jenkins ──► EKS public API ────► Control plane
                                               │
 VPC 10.20.0.0/16                              ▼
@@ -31,11 +31,6 @@ Terraform does **not** deploy application workloads, Ingress Controllers, or Clu
 - [Terraform](https://developer.hashicorp.com/terraform/install) `>= 1.5.7`
 - AWS credentials configured (`AWS_PROFILE`, env keys, or SSO)
 - [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) v2 and [kubectl](https://kubernetes.io/docs/tasks/tools/)
-- Your current public IP (for the API CIDR)
-
-```bash
-curl -s ifconfig.me
-```
 
 ## Quick start
 
@@ -43,10 +38,8 @@ curl -s ifconfig.me
 cd deploy-eks
 
 cp terraform.tfvars.example terraform.tfvars
-# Set allowed_api_cidr to YOUR_IP/32
-
-# Or inject via env:
-#   export TF_VAR_allowed_api_cidr="$(curl -s ifconfig.me)/32"
+# Optional: set allowed_api_cidr to YOUR_IP/32 to lock the lab down
+# (default is 0.0.0.0/0 for demo labs)
 
 terraform init
 terraform plan
@@ -84,13 +77,13 @@ Jenkins uses the **`deploy-vm` EC2 instance role** only — no IAM User, access 
 AuthN: attach IAM policies on the instance role. AuthZ: EKS access entry for that same role ARN.
 
 ```bash
-# 0. Prerequisites: deploy-vm and deploy-ecr already applied; note Jenkins public IP
+# 0. Prerequisites: deploy-vm and deploy-ecr already applied
 terraform -chdir=../deploy-vm output -raw instance_role_arn
-terraform -chdir=../deploy-vm output -json public_ips
 
-# 1. deploy-eks — AuthZ (access entry) + allow Jenkins on the public API
+# 1. deploy-eks — AuthZ (access entry). Public API defaults to 0.0.0.0/0 for demo labs.
 # In terraform.tfvars:
-#   ci_principal_arn     = "<instance_role_arn>"
+#   ci_principal_arn = "<instance_role_arn>"
+# Optional: if you narrowed allowed_api_cidr, also add Jenkins:
 #   additional_api_cidrs = ["<jenkins-public-ip>/32"]
 terraform apply
 
@@ -119,8 +112,8 @@ Destroy also takes ~10–15 minutes (node group, then cluster, then VPC/NAT).
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `allowed_api_cidr` | **yes** | — | CIDR for EKS public API (`/32` recommended). `0.0.0.0/0` rejected. |
-| `additional_api_cidrs` | no | `[]` | Extra API CIDRs (e.g. Jenkins public IP `/32`). `0.0.0.0/0` rejected. |
+| `allowed_api_cidr` | no | `0.0.0.0/0` | CIDR for EKS public API. Open for demo labs; set a `/32` to lock down. |
+| `additional_api_cidrs` | no | `[]` | Extra API CIDRs (e.g. Jenkins public IP `/32` when `allowed_api_cidr` is narrowed). |
 | `ci_principal_arn` | no | `null` | IAM principal ARN for EKS access entry — use the Jenkins **instance role** ARN from `deploy-vm` (Terraform AuthZ; no IAM User) |
 | `aws_region` | no | `us-east-1` | AWS region |
 | `project_name` | no | `deploy-eks` | Tag / name prefix |
@@ -138,7 +131,7 @@ Destroy also takes ~10–15 minutes (node group, then cluster, then VPC/NAT).
 
 ## Security defaults
 
-- Public API endpoint restricted to `allowed_api_cidr` and optional `additional_api_cidrs` (not open to the world)
+- Public API endpoint defaults to `0.0.0.0/0` for demo labs; set `allowed_api_cidr` (and optional `additional_api_cidrs`) to restrict if needed
 - Private endpoint enabled; worker nodes use private subnets only
 - Kubernetes secrets encrypted with a dedicated KMS key (rotation enabled)
 - Node EBS: **gp3**, **encrypted**, delete on termination

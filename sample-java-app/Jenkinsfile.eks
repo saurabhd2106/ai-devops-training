@@ -6,7 +6,7 @@
 //   - SONAR_HOST_URL Jenkins env var; credential ID sonarqube-token
 //   - Docker, aws CLI, and kubectl on the agent (kubectl from install-jenkins; curl fallback if missing)
 //   - deploy-vm instance role: ecr_push_pull_policy_arn + eks_deploy_policy_arn (Terraform)
-//   - deploy-eks: ci_principal_arn = instance role ARN; Jenkins IP in additional_api_cidrs (Terraform)
+//   - deploy-eks: ci_principal_arn = instance role ARN (Terraform; API open by default for demo labs)
 
 pipeline {
     agent any

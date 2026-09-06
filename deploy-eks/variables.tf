@@ -56,30 +56,26 @@ variable "cluster_version" {
 }
 
 variable "allowed_api_cidr" {
-  description = "CIDR allowed to reach the EKS public API endpoint. Prefer your public IP as /32. Avoid 0.0.0.0/0."
+  description = "CIDR allowed to reach the EKS public API endpoint. Defaults to 0.0.0.0/0 for demo labs; set a /32 to lock down."
   type        = string
+  default     = "0.0.0.0/0"
 
   validation {
     condition     = can(cidrhost(var.allowed_api_cidr, 0))
-    error_message = "allowed_api_cidr must be a valid CIDR block (e.g. 203.0.113.25/32)."
-  }
-
-  validation {
-    condition     = var.allowed_api_cidr != "0.0.0.0/0"
-    error_message = "allowed_api_cidr must not be 0.0.0.0/0. Restrict access to your public IP (/32) or a trusted network range."
+    error_message = "allowed_api_cidr must be a valid CIDR block (e.g. 0.0.0.0/0 or 203.0.113.25/32)."
   }
 }
 
 variable "additional_api_cidrs" {
-  description = "Extra CIDRs for the EKS public API (e.g. Jenkins public IP as /32). Merged with allowed_api_cidr. 0.0.0.0/0 rejected."
+  description = "Extra CIDRs for the EKS public API (e.g. Jenkins public IP as /32 when allowed_api_cidr is narrowed). Merged with allowed_api_cidr."
   type        = list(string)
   default     = []
 
   validation {
     condition = alltrue([
-      for c in var.additional_api_cidrs : can(cidrhost(c, 0)) && c != "0.0.0.0/0"
+      for c in var.additional_api_cidrs : can(cidrhost(c, 0))
     ])
-    error_message = "each additional_api_cidrs entry must be a valid CIDR and must not be 0.0.0.0/0."
+    error_message = "each additional_api_cidrs entry must be a valid CIDR block."
   }
 }
 

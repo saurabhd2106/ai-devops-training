@@ -230,11 +230,11 @@ AuthN and AuthZ use the **`deploy-vm` EC2 instance role** end-to-end. Do not cre
 Apply order:
 
 1. **`deploy-ecr`**: `terraform apply`, then set `ecr_push_pull_policy_arn` on `deploy-vm` from `push_pull_policy_arn`.
-2. **`deploy-eks`**: set Terraform AuthZ for the instance role and allow Jenkins on the API:
+2. **`deploy-eks`**: set Terraform AuthZ for the instance role (public API defaults to `0.0.0.0/0` for demo labs; add `additional_api_cidrs` only if you narrow `allowed_api_cidr`):
 
 ```hcl
-ci_principal_arn     = "<terraform -chdir=../deploy-vm output -raw instance_role_arn>"
-additional_api_cidrs = ["<jenkins-public-ip>/32"]  # public_ips.jenkins
+ci_principal_arn = "<terraform -chdir=../deploy-vm output -raw instance_role_arn>"
+# additional_api_cidrs = ["<jenkins-public-ip>/32"]  # only if allowed_api_cidr is narrowed
 ```
 
    `terraform apply` creates the EKS access entry and associates `AmazonEKSClusterAdminPolicy`.

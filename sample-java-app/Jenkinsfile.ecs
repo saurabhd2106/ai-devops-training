@@ -48,6 +48,11 @@ pipeline {
             defaultValue: 'app',
             description: 'Container name in the task definition to update'
         )
+        string(
+            name: 'ECS_CONTAINER_PORT',
+            defaultValue: '8080',
+            description: 'Container port for Spring Boot (must match ALB target group)'
+        )
     }
 
     environment {
@@ -186,6 +191,7 @@ pipeline {
                     def service = params.ECS_SERVICE.trim()
                     def family = params.ECS_TASK_FAMILY.trim()
                     def containerName = params.ECS_CONTAINER_NAME.trim()
+                    def containerPort = (params.ECS_CONTAINER_PORT ?: '8080').trim()
                     def image = env.DEPLOY_IMAGE
 
                     if (!image?.trim()) {
@@ -198,7 +204,10 @@ pipeline {
                         "ECS_SERVICE=${service}",
                         "ECS_TASK_FAMILY=${family}",
                         "ECS_CONTAINER_NAME=${containerName}",
+                        "ECS_CONTAINER_PORT=${containerPort}",
                         "DEPLOY_IMAGE=${image}",
+                        "ECS_STABLE_TIMEOUT_SEC=600",
+                        "ECS_STABLE_POLL_SEC=20",
                     ]) {
                         sh '''
                             set -euo pipefail
@@ -217,11 +226,18 @@ import json, os, sys
 td = json.loads(sys.stdin.read())
 container = os.environ["ECS_CONTAINER_NAME"]
 image = os.environ["DEPLOY_IMAGE"]
+container_port = int(os.environ.get("ECS_CONTAINER_PORT", "8080"))
 
 found = False
 for c in td.get("containerDefinitions", []):
     if c.get("name") == container:
         c["image"] = image
+        # Spring Boot listens on 8080; keep portMappings aligned with the ALB target group
+        c["portMappings"] = [{
+            "containerPort": container_port,
+            "hostPort": container_port,
+            "protocol": "tcp",
+        }]
         found = True
         break
 if not found:
@@ -256,10 +272,52 @@ print(json.dumps(td))
                               --task-definition "${ECS_TASK_FAMILY}:${NEW_REVISION}" \
                               --force-new-deployment
 
-                            echo "Waiting for service to become stable..."
-                            aws ecs wait services-stable \
-                              --cluster "${ECS_CLUSTER}" \
-                              --services "${ECS_SERVICE}"
+                            echo "Waiting for PRIMARY deployment to become COMPLETED (timeout ${ECS_STABLE_TIMEOUT_SEC}s)..."
+                            DEADLINE=$(( $(date +%s) + ECS_STABLE_TIMEOUT_SEC ))
+                            while true; do
+                              NOW=$(date +%s)
+                              if [ "${NOW}" -ge "${DEADLINE}" ]; then
+                                echo "Timed out waiting for ECS service to stabilize. Current deployments:"
+                                aws ecs describe-services \
+                                  --cluster "${ECS_CLUSTER}" \
+                                  --services "${ECS_SERVICE}" \
+                                  --query 'services[0].deployments' --output json || true
+                                echo "Recent stopped tasks:"
+                                STOPPED=$(aws ecs list-tasks \
+                                  --cluster "${ECS_CLUSTER}" \
+                                  --service-name "${ECS_SERVICE}" \
+                                  --desired-status STOPPED \
+                                  --query 'taskArns[0:3]' --output text)
+                                if [ -n "${STOPPED}" ] && [ "${STOPPED}" != "None" ]; then
+                                  aws ecs describe-tasks \
+                                    --cluster "${ECS_CLUSTER}" \
+                                    --tasks ${STOPPED} \
+                                    --query 'tasks[*].{stoppedReason:stoppedReason,stopCode:stopCode,taskDef:taskDefinitionArn}' \
+                                    --output json || true
+                                fi
+                                exit 1
+                              fi
+
+                              ROLL=$(aws ecs describe-services \
+                                --cluster "${ECS_CLUSTER}" \
+                                --services "${ECS_SERVICE}" \
+                                --query 'services[0].deployments[?status==`PRIMARY`] | [0].{rollout:rolloutState,running:runningCount,desired:desiredCount,failed:failedTasks,taskDef:taskDefinition}' \
+                                --output json)
+                              echo "$(date -u +%H:%M:%S) PRIMARY=${ROLL}"
+
+                              echo "${ROLL}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+ok = (
+    d.get("rollout") == "COMPLETED"
+    and int(d.get("running") or 0) == int(d.get("desired") or -1)
+    and int(d.get("desired") or 0) > 0
+)
+sys.exit(0 if ok else 1)
+' && break
+
+                              sleep "${ECS_STABLE_POLL_SEC}"
+                            done
 
                             echo "Deployed ${ECS_SERVICE} on ${ECS_CLUSTER} using ${ECS_TASK_FAMILY}:${NEW_REVISION}"
                         '''

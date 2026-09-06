@@ -47,6 +47,6 @@ ssh_public_key = "ssh-ed25519 AAAA... your-comment"
 #   terraform -chdir=../deploy-ecs output -raw ci_deploy_policy_arn
 # ecs_deploy_policy_arn = "arn:aws:iam::ACCOUNT:policy/deploy-ecs-development-ci-deploy"
 #
-# After apply in ../deploy-eks (with ci_principal_arn + additional_api_cidrs), attach CI deploy for kubectl:
+# After apply in ../deploy-eks (with ci_principal_arn), attach CI deploy for kubectl:
 #   terraform -chdir=../deploy-eks output -raw ci_deploy_policy_arn
 # eks_deploy_policy_arn = "arn:aws:iam::ACCOUNT:policy/deploy-eks-development-ci-deploy"

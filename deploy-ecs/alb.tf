@@ -15,7 +15,8 @@ resource "aws_lb" "main" {
 resource "aws_lb_target_group" "service" {
   for_each = local.services
 
-  name        = substr("${local.name_prefix}-${each.key}", 0, 32)
+  # name_prefix allows create_before_destroy when port/health_check changes
+  name_prefix = substr("${each.key}${each.value.container_port}-", 0, 6)
   port        = each.value.container_port
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
