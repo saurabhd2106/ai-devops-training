@@ -85,6 +85,18 @@ terraform output -raw ci_artifacts_bucket
 
 Use `private_ips.sonarqube` as the Jenkins environment variable `SONAR_HOST_URL` (`http://<ip>:9000`) and `ci_artifacts_bucket` as the Jenkins environment variable `S3_BUCKET` for [`sample-java-app`](../sample-java-app).
 
+### Application VM deploy (Jenkins + SSM)
+
+[`sample-java-app/Jenkinsfile.deploy-app`](../sample-java-app/Jenkinsfile.deploy-app) publishes the JAR to the CI S3 bucket, then uses **SSM Send-Command** so the `app` EC2 pulls the artefact and restarts a systemd service on port **80**.
+
+The shared instance role includes an inline policy (`ci_ssm_deploy.tf`) for:
+
+- `ec2:DescribeInstances` (discover running instance tagged `Role=app`)
+- `ssm:SendCommand` on `AWS-RunShellScript` and EC2 instances
+- `ssm:GetCommandInvocation` / `ssm:ListCommands` / `ssm:ListCommandInvocations`
+
+App VMs already have `AmazonSSMManagedInstanceCore`. Optional Jenkins env `APP_INSTANCE_ID` pins the target; otherwise the pipeline discovers by tag. Verify with `http://<app-public-ip>/users/echo?q=ok`.
+
 ### ECR publish (Jenkins)
 
 After [`deploy-ecr`](../deploy-ecr) is applied, attach its push/pull policy to this stack’s instance role so Jenkins can log in and push images:
@@ -92,6 +104,26 @@ After [`deploy-ecr`](../deploy-ecr) is applied, attach its push/pull policy to t
 ```bash
 terraform -chdir=../deploy-ecr output -raw push_pull_policy_arn
 # Set ecr_push_pull_policy_arn in terraform.tfvars to that ARN, then:
+terraform apply
+```
+
+### ECS deploy (Jenkins)
+
+After [`deploy-ecs`](../deploy-ecs) is applied, attach its CI deploy policy so Jenkins can register task definitions and update services ([`Jenkinsfile.ecs`](../sample-java-app/Jenkinsfile.ecs)):
+
+```bash
+terraform -chdir=../deploy-ecs output -raw ci_deploy_policy_arn
+# Set ecs_deploy_policy_arn in terraform.tfvars to that ARN, then:
+terraform apply
+```
+
+### EKS deploy (Jenkins)
+
+After [`deploy-eks`](../deploy-eks) is applied with `ci_principal_arn` and Jenkins IP in `additional_api_cidrs`, attach its CI deploy policy so Jenkins can run kubectl ([`Jenkinsfile.eks`](../sample-java-app/Jenkinsfile.eks)):
+
+```bash
+terraform -chdir=../deploy-eks output -raw ci_deploy_policy_arn
+# Set eks_deploy_policy_arn in terraform.tfvars to that ARN, then:
 terraform apply
 ```
 
@@ -105,7 +137,7 @@ ssh -i ~/.ssh/id_ed25519 ec2-user@<app-public-ip>
 
 UI endpoints (from your allowed CIDR):
 
-- App: `http://<app-ip>/` or `https://<app-ip>/`
+- App (after [`Jenkinsfile.deploy-app`](../sample-java-app/Jenkinsfile.deploy-app)): `http://<app-ip>/users/echo?q=ok`
 - SonarQube: `http://<sonarqube-ip>:9000` — install software with [`install-sonarqube`](../install-sonarqube/README.md)
 - Jenkins: `http://<jenkins-ip>:8080` — install software with [`install-jenkins`](../install-jenkins/README.md)
 
@@ -134,13 +166,15 @@ terraform destroy
 | `key_name` | no | `deploy-vm-key` | Key pair name prefix |
 | `enable_detailed_monitoring` | no | `false` | 1-minute CloudWatch metrics (extra cost) |
 | `ecr_push_pull_policy_arn` | no | `null` | IAM policy ARN from `deploy-ecr` `push_pull_policy_arn` for Jenkins ECR push/pull |
+| `ecs_deploy_policy_arn` | no | `null` | IAM policy ARN from `deploy-ecs` `ci_deploy_policy_arn` for Jenkins ECS deploy |
+| `eks_deploy_policy_arn` | no | `null` | IAM policy ARN from `deploy-eks` `ci_deploy_policy_arn` for Jenkins EKS kubectl deploy |
 
 ## Security defaults
 
 - SSH and app/UI ports restricted to `allowed_ssh_cidr`
 - EBS root: **gp3**, **encrypted**, delete on termination
 - **IMDSv2 required**, hop limit `1`
-- Shared IAM with `AmazonSSMManagedInstanceCore` (and optional `ecr_push_pull_policy_arn` for ECR)
+- Shared IAM with `AmazonSSMManagedInstanceCore`, CI S3 read/write, SSM deploy (`SendCommand` / `GetCommandInvocation`), and optional `ecr_push_pull_policy_arn` / `ecs_deploy_policy_arn` / `eks_deploy_policy_arn` for Jenkins
 - AMI pinned after first apply (`lifecycle.ignore_changes = [ami]`)
 
 ## Estimated monthly cost (us-east-1, On-Demand, 24/7)
@@ -173,11 +207,11 @@ Local state is used by default. Uncomment and configure the S3 backend in `versi
 | `ci_artifacts_bucket` | Jenkins environment variable `S3_BUCKET` |
 | `ci_artifacts_bucket_arn` | IAM / debugging |
 
-Bucket name pattern: `{project_name}-{environment}-ci-artifacts-{account_id}`. Objects are written by Jenkins via the shared instance role (`s3:ListBucket`, `s3:GetObject`, `s3:PutObject` on that bucket).
+Bucket name pattern: `{project_name}-{environment}-ci-artifacts-{account_id}`. Objects are written by Jenkins via the shared instance role (`s3:ListBucket`, `s3:GetObject`, `s3:PutObject` on that bucket). The same role can `ssm:SendCommand` so Jenkins can deploy to the `app` VM ([`Jenkinsfile.deploy-app`](../sample-java-app/Jenkinsfile.deploy-app)).
 
 ## Out of scope
 
-- Installing Jenkins (use sibling [`install-jenkins`](../install-jenkins/README.md)), SonarQube (use sibling [`install-sonarqube`](../install-sonarqube/README.md)), or application software
+- Installing Jenkins (use sibling [`install-jenkins`](../install-jenkins/README.md)), SonarQube (use sibling [`install-sonarqube`](../install-sonarqube/README.md)), or application software (first deploy via SSM bootstraps Java + systemd; see [`sample-java-app/ci/deploy-app.sh`](../sample-java-app/ci/deploy-app.sh))
 - NAT Gateway / private subnets
 - Auto Scaling, ALB, Elastic IPs
 - Automated `terraform apply` from CI

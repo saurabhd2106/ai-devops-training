@@ -78,8 +78,8 @@ ansible-playbook site.yml -e jenkins_update_packages=true
    |-------|-------------|
    | **Manage Jenkins → Credentials** | Secret text ID **`sonarqube-token`** (token from SonarQube → My Account → Security). Optional: Kind **AWS Credentials**, ID **`aws-ci`**, if Jenkins is not using the `deploy-vm` instance profile. |
    | **Manage Jenkins → Tools** | JDK `jdk-26` → `/usr/lib/jvm/java-26-amazon-corretto.x86_64`. Maven `maven-3.9` → `/opt/maven`. SonarQube Scanner `sonar-scanner` → `/opt/sonar-scanner`. Uncheck **Install automatically**. |
-   | **Manage Jenkins → System → Global properties** | Env **`SONAR_HOST_URL`** = `http://<sonarqube-private-ip>:9000`. Env **`S3_BUCKET`** = `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`. |
-   | Job | **New Item** → Pipeline → **Pipeline script from SCM**, Script Path `sample-java-app/Jenkinsfile` |
+   | **Manage Jenkins → System → Global properties** | Env **`SONAR_HOST_URL`** = `http://<sonarqube-private-ip>:9000`. Env **`S3_BUCKET`** = `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`. Optional: **`APP_INSTANCE_ID`** for Application VM deploy. |
+   | Job | **New Item** → Pipeline → **Pipeline script from SCM**, Script Path `sample-java-app/Jenkinsfile` (build/test/Sonar/S3) or `sample-java-app/Jenkinsfile.deploy-app` (same + SSM deploy to the `app` VM) |
 
 ## Variables
 

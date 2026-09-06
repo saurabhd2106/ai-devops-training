@@ -113,6 +113,20 @@ resource "aws_iam_role_policy_attachment" "ecr_push_pull" {
   policy_arn = var.ecr_push_pull_policy_arn
 }
 
+resource "aws_iam_role_policy_attachment" "ecs_deploy" {
+  count = var.ecs_deploy_policy_arn != null ? 1 : 0
+
+  role       = aws_iam_role.instance.name
+  policy_arn = var.ecs_deploy_policy_arn
+}
+
+resource "aws_iam_role_policy_attachment" "eks_deploy" {
+  count = var.eks_deploy_policy_arn != null ? 1 : 0
+
+  role       = aws_iam_role.instance.name
+  policy_arn = var.eks_deploy_policy_arn
+}
+
 resource "aws_iam_instance_profile" "instance" {
   name_prefix = "${var.project_name}-${var.environment}-"
   role        = aws_iam_role.instance.name

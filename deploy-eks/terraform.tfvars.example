@@ -14,6 +14,14 @@ cluster_version = "1.34"
 # Used to restrict the EKS public API endpoint.
 allowed_api_cidr = "203.0.113.25/32"
 
+# Optional: add Jenkins (or other CI) public IP so kubectl from that host can reach the API
+#   terraform -chdir=../deploy-vm output -json public_ips
+# additional_api_cidrs = ["203.0.113.50/32"]
+
+# Optional: grant Jenkins instance role cluster admin via EKS access entry
+#   terraform -chdir=../deploy-vm output -raw instance_role_arn
+# ci_principal_arn = "arn:aws:iam::ACCOUNT:role/deploy-vm-development-XXXX"
+
 # Optional node group sizing
 # node_instance_types = ["t3.medium"]
 # node_desired_size   = 2

@@ -70,6 +70,25 @@ variable "allowed_api_cidr" {
   }
 }
 
+variable "additional_api_cidrs" {
+  description = "Extra CIDRs for the EKS public API (e.g. Jenkins public IP as /32). Merged with allowed_api_cidr. 0.0.0.0/0 rejected."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for c in var.additional_api_cidrs : can(cidrhost(c, 0)) && c != "0.0.0.0/0"
+    ])
+    error_message = "each additional_api_cidrs entry must be a valid CIDR and must not be 0.0.0.0/0."
+  }
+}
+
+variable "ci_principal_arn" {
+  description = "Optional IAM principal ARN (e.g. deploy-vm instance_role_arn) granted EKS cluster admin via access entry for Jenkins kubectl deploy"
+  type        = string
+  default     = null
+}
+
 variable "node_instance_types" {
   description = "EC2 instance types for the managed node group"
   type        = list(string)
@@ -136,6 +155,8 @@ locals {
 
   # EKS disallows these AZ IDs for cluster subnets
   disallowed_az_ids = toset(["use1-az3", "usw1-az2", "cac1-az3"])
+
+  public_access_cidrs = distinct(concat([var.allowed_api_cidr], var.additional_api_cidrs))
 
   enabled_cluster_log_types = var.enable_cluster_logs ? [
     "api",

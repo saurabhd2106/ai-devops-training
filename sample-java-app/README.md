@@ -16,6 +16,7 @@ Do this after Terraform (`deploy-vm`) and the Ansible installs (`install-sonarqu
 ```bash
 terraform -chdir=../deploy-vm output -json public_ips
 terraform -chdir=../deploy-vm output -json private_ips
+terraform -chdir=../deploy-vm output -json instance_ids
 terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket
 ```
 
@@ -24,6 +25,8 @@ terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket
 | SonarQube **public** IP `:9000` | Browser, GitLab `SONAR_HOST_URL` (shared GitLab.com runners) |
 | SonarQube **private** IP `:9000` | Jenkins environment variable `SONAR_HOST_URL` |
 | `ci_artifacts_bucket` | Jenkins environment variable `S3_BUCKET` |
+| App instance ID (`instance_ids.app`) | Optional Jenkins env `APP_INSTANCE_ID` for [`Jenkinsfile.deploy-app`](Jenkinsfile.deploy-app) |
+| App **public** IP | Verify deploy: `http://<app-public-ip>/users/echo?q=ok` |
 
 ### 1. Create a SonarQube token
 
@@ -88,12 +91,13 @@ The default [`Jenkinsfile`](Jenkinsfile) uses `PATH` (`/opt/maven/bin`, `/opt/so
 
 #### Environment variables (Manage Jenkins → System → Global properties)
 
-[`Jenkinsfile`](Jenkinsfile) reads `SONAR_HOST_URL` and `S3_BUCKET` from the Jenkins environment (not job parameters).
+[`Jenkinsfile`](Jenkinsfile) and [`Jenkinsfile.deploy-app`](Jenkinsfile.deploy-app) read `SONAR_HOST_URL` and `S3_BUCKET` from the Jenkins environment (not job parameters).
 
 1. Check **Environment variables**
 2. **Add**:
    - Name: `SONAR_HOST_URL`, Value: `http://<sonarqube-private-ip>:9000`
    - Name: `S3_BUCKET`, Value: `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`
+   - Name: `APP_INSTANCE_ID` (optional), Value: `terraform -chdir=../deploy-vm output -json instance_ids` → `app`. If unset, [`Jenkinsfile.deploy-app`](Jenkinsfile.deploy-app) discovers a running EC2 with tag `Role=app`.
 3. **Save**
 
 You can also set these on a folder or individual job instead of globally.
@@ -104,6 +108,12 @@ You can also set these on a folder or individual job instead of globally.
 2. Pipeline → **Pipeline script from SCM** → your Git repo
 3. Script Path: `sample-java-app/Jenkinsfile` (monorepo) or `Jenkinsfile` (app-only checkout)
 4. **Save**, then **Build** (optional parameter `AWS_REGION`, default `us-east-1`)
+
+For build + Sonar + S3 + deploy to the Application VM, create a job with Script Path `sample-java-app/Jenkinsfile.deploy-app` (see [Jenkins CI + Application VM deploy](#jenkins-ci--application-vm-deploy)).
+
+For ECR + ECS deploy, create a job with Script Path `sample-java-app/Jenkinsfile.ecs` (see [Jenkins CI/CD pipeline (ECR + ECS)](#jenkins-cicd-pipeline-ecr--ecs)).
+
+For ECR + EKS deploy, create a job with Script Path `sample-java-app/Jenkinsfile.eks` (see [Jenkins CI/CD pipeline (ECR + EKS)](#jenkins-cicd-pipeline-ecr--eks)).
 
 ## Jenkins CI pipeline
 
@@ -120,9 +130,26 @@ Declarative pipeline: [`Jenkinsfile`](Jenkinsfile).
 
 Use the **`deploy-vm`** output `ci_artifacts_bucket` (instance role already has `s3:PutObject`). Do not point this job at a [`deploy-s3`](../deploy-s3) bucket unless that role is granted access.
 
+### Jenkins CI + Application VM deploy
+
+Declarative pipeline: [`Jenkinsfile.deploy-app`](Jenkinsfile.deploy-app). Same stages as above, then deploys via SSM.
+
+| Stage | What it does |
+|-------|----------------|
+| Checkout → Publish artefacts | Same as [`Jenkinsfile`](Jenkinsfile) |
+| Deploy to Application VM | Upload [`ci/deploy-app.sh`](ci/deploy-app.sh) to S3; resolve app EC2 (`APP_INSTANCE_ID` or tag `Role=app`); `ssm send-command` so the VM pulls the JAR, installs Corretto 26 if needed, writes a systemd unit on port **80**, restarts, and health-checks `http://127.0.0.1/users/echo?q=ok` |
+
+Verify from your allowed CIDR:
+
+```bash
+curl "http://<app-public-ip>/users/echo?q=ok"
+```
+
+Requires `terraform apply` in [`deploy-vm`](../deploy-vm) so the shared instance role has the SSM deploy IAM (`ci_ssm_deploy.tf`).
+
 ### Prerequisites (lab)
 
-1. Apply Terraform in [`deploy-vm`](../deploy-vm) (creates VMs, CI S3 bucket, Jenkins→SonarQube:9000 SG rule).
+1. Apply Terraform in [`deploy-vm`](../deploy-vm) (creates VMs, CI S3 bucket, Jenkins→SonarQube:9000 SG rule, SSM deploy IAM).
 2. Install SonarQube with [`install-sonarqube`](../install-sonarqube).
 3. Install Jenkins + build tools with [`install-jenkins`](../install-jenkins) (JDK 26, Maven, sonar-scanner, plugins).
 4. Add the GitLab variables and Jenkins credentials / tools from [CI credentials and tool configuration](#ci-credentials-and-tool-configuration).
@@ -131,6 +158,81 @@ Artefacts land at:
 
 - Jenkins build archive: `target/sonarqube-java-demo-*.jar`, surefire XML
 - S3: `s3://<bucket>/sample-java-app/<BUILD_NUMBER>/`
+- App VM (deploy pipeline): `/opt/sample-java-app/app.jar`, systemd unit `sample-java-app` on port 80
+
+## Jenkins CI/CD pipeline (ECR + ECS)
+
+Declarative pipeline: [`Jenkinsfile.ecs`](Jenkinsfile.ecs). Builds with Docker Maven, scans with SonarQube, pushes the image to **`deploy-ecr/sonarqube-java-demo`**, then registers a new ECS task definition and updates the Fargate service.
+
+| Stage | What it does |
+|-------|----------------|
+| Checkout | SCM checkout; fails early if `docker`, `aws`, or `python3` is missing |
+| Build | `mvn -B -DskipTests package` via `maven:3.9-eclipse-temurin-26` |
+| Test | `mvn -B test jacoco:report` + JUnit / JaCoCo artefacts |
+| SonarQube | `mvn sonar:sonar` (`SONAR_HOST_URL` + credential `sonarqube-token`) |
+| Publish ECR | `docker build` / push `${BUILD_NUMBER}` and `latest` to ECR |
+| Deploy ECS | Rewrite task definition image → `register-task-definition` → `update-service` → `wait services-stable` |
+
+### Job setup
+
+1. **New Item** → Pipeline → Script Path `sample-java-app/Jenkinsfile.ecs`
+2. Same `sonarqube-token` credential and `SONAR_HOST_URL` as the S3 job
+3. Optional build parameters (defaults match Terraform naming):
+
+| Parameter | Default |
+|-----------|---------|
+| `AWS_REGION` | `us-east-1` |
+| `ECR_REPOSITORY` | `deploy-ecr/sonarqube-java-demo` |
+| `ECS_CLUSTER` | `deploy-ecs-development-cluster` |
+| `ECS_SERVICE` | `app` |
+| `ECS_TASK_FAMILY` | `deploy-ecs-development-app` |
+| `ECS_CONTAINER_NAME` | `app` |
+
+### Prerequisites (ECR + ECS)
+
+1. Apply [`deploy-ecr`](../deploy-ecr) and attach `push_pull_policy_arn` to `deploy-vm` as `ecr_push_pull_policy_arn`.
+2. Apply [`deploy-ecs`](../deploy-ecs) with the Java service settings (`container_port = 8080`, `health_check_path = "/health"`, `image` pointing at the ECR repo). See `deploy-ecs/terraform.tfvars.example`.
+3. Attach `ci_deploy_policy_arn` from `deploy-ecs` to `deploy-vm` as `ecs_deploy_policy_arn`, then `terraform apply` in `deploy-vm`.
+4. Docker must be installed on the Jenkins agent (`install-jenkins` does not install Docker; the existing [`Jenkinsfile.sonarqube-java-demo`](Jenkinsfile.sonarqube-java-demo) has the same requirement).
+
+The app exposes `GET /health` for the ALB health check. Re-apply `deploy-ecs` with port **8080** before the first deploy; changing only the image in CI is not enough if the target group is still on port 80.
+
+## Jenkins CI/CD pipeline (ECR + EKS)
+
+Declarative pipeline: [`Jenkinsfile.eks`](Jenkinsfile.eks). Same build / test / Sonar / ECR flow as [`Jenkinsfile.ecs`](Jenkinsfile.ecs), then applies Kubernetes manifests under [`k8s/`](k8s/) to the **`deploy-eks`** cluster (internet-facing NLB Service).
+
+| Stage | What it does |
+|-------|----------------|
+| Checkout | SCM checkout; fails early if `docker` or `aws` is missing |
+| Build | `mvn -B -DskipTests package` via `maven:3.9-eclipse-temurin-26` |
+| Test | `mvn -B test jacoco:report` + JUnit / JaCoCo artefacts |
+| SonarQube | `mvn sonar:sonar` (`SONAR_HOST_URL` + credential `sonarqube-token`) |
+| Publish ECR | `docker build` / push `${BUILD_NUMBER}` and `latest` to ECR |
+| Deploy EKS | Download kubectl if needed → `aws eks update-kubeconfig` → substitute image into Deployment → `kubectl apply` → rollout status → print NLB hostname |
+
+### Job setup
+
+1. **New Item** → Pipeline → Script Path `sample-java-app/Jenkinsfile.eks`
+2. Same `sonarqube-token` credential and `SONAR_HOST_URL` as the other jobs
+3. Optional build parameters (defaults match Terraform naming):
+
+| Parameter | Default |
+|-----------|---------|
+| `AWS_REGION` | `us-east-1` |
+| `ECR_REPOSITORY` | `deploy-ecr/sonarqube-java-demo` |
+| `EKS_CLUSTER` | `deploy-eks-development` |
+| `K8S_NAMESPACE` | `default` |
+
+### Prerequisites (ECR + EKS)
+
+1. Apply [`deploy-ecr`](../deploy-ecr) and attach `push_pull_policy_arn` to `deploy-vm` as `ecr_push_pull_policy_arn`.
+2. Apply [`deploy-eks`](../deploy-eks) with:
+   - `ci_principal_arn` = `terraform -chdir=../deploy-vm output -raw instance_role_arn`
+   - `additional_api_cidrs` = `["<jenkins-public-ip>/32"]` (from `public_ips.jenkins`)
+3. Attach `ci_deploy_policy_arn` from `deploy-eks` to `deploy-vm` as `eks_deploy_policy_arn`, then `terraform apply` in `deploy-vm`.
+4. Docker must be installed on the Jenkins agent (`install-jenkins` does not install Docker; same requirement as [`Jenkinsfile.ecs`](Jenkinsfile.ecs) / [`Jenkinsfile.sonarqube-java-demo`](Jenkinsfile.sonarqube-java-demo)). kubectl is downloaded by the pipeline if missing.
+
+After a successful deploy, open the NLB hostname printed in the build log (Service port **80** → container **8080**). Probes use TCP on 8080 (this demo app has no `/health` HTTP path).
 
 ## GitLab CI pipeline
 

@@ -1,0 +1,246 @@
+// Declarative CI/CD for sonarqube-java-demo: build, test, Sonar, ECR, EKS.
+// Jenkins job Script Path: sample-java-app/Jenkinsfile.eks
+// (or Jenkinsfile.eks if the job roots at sample-java-app)
+//
+// Prerequisites:
+//   - SONAR_HOST_URL Jenkins env var; credential ID sonarqube-token
+//   - Docker and aws CLI on the agent (kubectl is downloaded if missing)
+//   - deploy-vm instance role: ecr_push_pull_policy_arn + eks_deploy_policy_arn
+//   - deploy-eks: ci_principal_arn = Jenkins instance role; Jenkins IP in additional_api_cidrs
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    parameters {
+        string(
+            name: 'AWS_REGION',
+            defaultValue: 'us-east-1',
+            description: 'AWS region for ECR and EKS'
+        )
+        string(
+            name: 'ECR_REPOSITORY',
+            defaultValue: 'deploy-ecr/sonarqube-java-demo',
+            description: 'ECR repository name (e.g. deploy-ecr/sonarqube-java-demo)'
+        )
+        string(
+            name: 'EKS_CLUSTER',
+            defaultValue: 'deploy-eks-development',
+            description: 'EKS cluster name (terraform -chdir=deploy-eks output -raw cluster_name)'
+        )
+        string(
+            name: 'K8S_NAMESPACE',
+            defaultValue: 'default',
+            description: 'Kubernetes namespace for the application'
+        )
+    }
+
+    environment {
+        MAVEN_IMAGE = 'maven:3.9-eclipse-temurin-26'
+        IMAGE_NAME = 'sonarqube-java-demo'
+        JAR_NAME = 'sonarqube-java-demo-0.0.1-SNAPSHOT.jar'
+        SONAR_TOKEN = credentials('sonarqube-token')
+        KUBECTL_VERSION = '1.34.0'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    if (fileExists('pom.xml')) {
+                        env.APP_DIR = '.'
+                    } else if (fileExists('sample-java-app/pom.xml')) {
+                        env.APP_DIR = 'sample-java-app'
+                    } else {
+                        error 'Could not find pom.xml (expected sample-java-app or job rooted at that folder)'
+                    }
+                    echo "Using application directory: ${env.APP_DIR}"
+                }
+                sh '''
+                    command -v docker >/dev/null || { echo "docker not found on PATH"; exit 1; }
+                    command -v aws >/dev/null || { echo "aws CLI not found on PATH"; exit 1; }
+                    docker --version
+                    aws --version
+                '''
+            }
+        }
+
+        stage('Build') {
+            steps {
+                dir("${APP_DIR}") {
+                    sh '''
+                        docker run --rm \
+                          -v "$PWD":/workspace \
+                          -v "$HOME/.m2":/root/.m2 \
+                          -w /workspace \
+                          "$MAVEN_IMAGE" \
+                          mvn -B -DskipTests package
+                    '''
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                dir("${APP_DIR}") {
+                    sh '''
+                        docker run --rm \
+                          -v "$PWD":/workspace \
+                          -v "$HOME/.m2":/root/.m2 \
+                          -w /workspace \
+                          "$MAVEN_IMAGE" \
+                          mvn -B test jacoco:report
+                    '''
+                }
+            }
+            post {
+                always {
+                    dir("${APP_DIR}") {
+                        junit allowEmptyResults: true, testResults: 'target/surefire-reports/*.xml'
+                        archiveArtifacts artifacts: 'target/surefire-reports/**', allowEmptyArchive: true
+                        archiveArtifacts artifacts: 'target/site/jacoco/**', allowEmptyArchive: true
+                    }
+                }
+            }
+        }
+
+        stage('SonarQube') {
+            steps {
+                dir("${APP_DIR}") {
+                    script {
+                        if (!env.SONAR_HOST_URL?.trim()) {
+                            error 'SONAR_HOST_URL must be set as a Jenkins environment variable'
+                        }
+                    }
+                    sh '''
+                        docker run --rm \
+                          --network host \
+                          -v "$PWD":/workspace \
+                          -v "$HOME/.m2":/root/.m2 \
+                          -e SONAR_HOST_URL \
+                          -e SONAR_TOKEN \
+                          -w /workspace \
+                          "$MAVEN_IMAGE" \
+                          mvn -B sonar:sonar
+                    '''
+                }
+            }
+        }
+
+        stage('Publish ECR') {
+            steps {
+                dir("${APP_DIR}") {
+                    script {
+                        def region = params.AWS_REGION.trim()
+                        def repo = params.ECR_REPOSITORY.trim()
+                        def accountId = sh(
+                            script: 'aws sts get-caller-identity --query Account --output text',
+                            returnStdout: true
+                        ).trim()
+                        def registry = "${accountId}.dkr.ecr.${region}.amazonaws.com"
+                        def imageTag = "${registry}/${repo}:${env.BUILD_NUMBER}"
+                        def imageLatest = "${registry}/${repo}:latest"
+
+                        env.DEPLOY_IMAGE = imageTag
+                        env.DEPLOY_IMAGE_LATEST = imageLatest
+
+                        sh """
+                            test -f target/${JAR_NAME}
+                            docker build -t ${IMAGE_NAME}:${env.BUILD_NUMBER} -t ${IMAGE_NAME}:latest .
+                            docker tag ${IMAGE_NAME}:${env.BUILD_NUMBER} ${imageTag}
+                            docker tag ${IMAGE_NAME}:latest ${imageLatest}
+                            aws ecr get-login-password --region ${region} | \
+                              docker login --username AWS --password-stdin ${registry}
+                            docker push ${imageTag}
+                            docker push ${imageLatest}
+                        """
+
+                        echo "Published ${imageTag} and ${imageLatest}"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy EKS') {
+            steps {
+                dir("${APP_DIR}") {
+                    script {
+                        def region = params.AWS_REGION.trim()
+                        def cluster = params.EKS_CLUSTER.trim()
+                        def namespace = params.K8S_NAMESPACE.trim()
+                        def image = env.DEPLOY_IMAGE
+
+                        if (!image?.trim()) {
+                            error 'DEPLOY_IMAGE was not set by Publish ECR stage'
+                        }
+
+                        withEnv([
+                            "AWS_DEFAULT_REGION=${region}",
+                            "EKS_CLUSTER=${cluster}",
+                            "K8S_NAMESPACE=${namespace}",
+                            "DEPLOY_IMAGE=${image}",
+                            "KUBECTL_VERSION=${env.KUBECTL_VERSION}",
+                        ]) {
+                            sh '''
+                                set -euo pipefail
+
+                                if command -v kubectl >/dev/null 2>&1; then
+                                  KUBECTL="$(command -v kubectl)"
+                                else
+                                  echo "kubectl not on PATH; downloading v${KUBECTL_VERSION}..."
+                                  curl -fsSL -o /tmp/kubectl \
+                                    "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+                                  chmod +x /tmp/kubectl
+                                  KUBECTL=/tmp/kubectl
+                                fi
+                                "${KUBECTL}" version --client --output=yaml || "${KUBECTL}" version --client
+
+                                aws sts get-caller-identity
+                                aws eks update-kubeconfig --name "${EKS_CLUSTER}" --region "${AWS_DEFAULT_REGION}"
+                                "${KUBECTL}" get nodes
+
+                                test -d k8s
+                                mkdir -p /tmp/k8s-rendered
+                                sed "s|IMAGE_PLACEHOLDER|${DEPLOY_IMAGE}|g" k8s/deployment.yaml > /tmp/k8s-rendered/deployment.yaml
+                                cp k8s/service.yaml /tmp/k8s-rendered/service.yaml
+
+                                "${KUBECTL}" apply -n "${K8S_NAMESPACE}" -f /tmp/k8s-rendered/
+                                "${KUBECTL}" rollout status deployment/sonarqube-java-demo \
+                                  -n "${K8S_NAMESPACE}" --timeout=300s
+
+                                echo "Waiting for LoadBalancer hostname..."
+                                for i in $(seq 1 36); do
+                                  HOST=$("${KUBECTL}" get svc sonarqube-java-demo \
+                                    -n "${K8S_NAMESPACE}" \
+                                    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+                                  if [ -n "${HOST}" ]; then
+                                    echo "Service endpoint: http://${HOST}"
+                                    break
+                                  fi
+                                  sleep 5
+                                done
+                                if [ -z "${HOST:-}" ]; then
+                                  echo "LoadBalancer hostname not ready yet; check: kubectl get svc sonarqube-java-demo -n ${K8S_NAMESPACE}"
+                                fi
+
+                                "${KUBECTL}" get deployment,svc,pods -n "${K8S_NAMESPACE}" -l app=sonarqube-java-demo
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs(deleteDirs: true, notFailBuild: true)
+        }
+    }
+}

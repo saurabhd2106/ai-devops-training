@@ -95,6 +95,25 @@ docker push <ecr_url>:latest
 
 Then set `services.app.image` to that URL (with tag) and run `terraform apply` again.
 
+### Java app (sample-java-app) on Fargate
+
+For [`sample-java-app/Jenkinsfile.ecs`](../sample-java-app/Jenkinsfile.ecs), configure the `app` service for Spring Boot (see `terraform.tfvars.example`):
+
+- `container_port = 8080`
+- `health_check_path = "/health"`
+- `image` = your `deploy-ecr/sonarqube-java-demo` URL (or let CI update the task definition after the first push)
+- `create_ecr = false` if images live in the separate [`deploy-ecr`](../deploy-ecr) stack
+
+Attach the CI deploy policy to the Jenkins instance role:
+
+```bash
+terraform output -raw ci_deploy_policy_arn
+# Set ecs_deploy_policy_arn in ../deploy-vm/terraform.tfvars, then:
+terraform -chdir=../deploy-vm apply
+```
+
+Also attach `deploy-ecr` `push_pull_policy_arn` as `ecr_push_pull_policy_arn` on `deploy-vm` so Jenkins can push images.
+
 ### ECS Exec (debug)
 
 ```bash
@@ -140,8 +159,17 @@ NAT Gateway and ALB bill by the hour — destroy when idle.
 - ALB ingress restricted to `allowed_ingress_cidr`
 - Task security groups: inbound from ALB SG only; outbound HTTPS (443) for ECR/AWS APIs
 - ECR: scan on push, AES-256 encryption, lifecycle keep last 10 images
-- IAM: execution role for pull/logs; task role limited to ECS Exec (`ssmmessages`)
+- IAM: execution role for pull/logs; task role limited to ECS Exec (`ssmmessages`); optional `ci_deploy` policy for Jenkins
 - Optional TLS 1.2+ via existing ACM certificate (not created by this stack)
+
+## Outputs (CI-related)
+
+| Output | Use |
+|--------|-----|
+| `ci_deploy_policy_arn` | Set as `ecs_deploy_policy_arn` on [`deploy-vm`](../deploy-vm) so Jenkins can register task defs and update services |
+| `ecs_cluster_name` | Jenkins parameter `ECS_CLUSTER` |
+| `service_names` | Jenkins parameter `ECS_SERVICE` (default `app`) |
+| `alb_url` | Smoke-test after deploy |
 
 ## Estimated monthly cost (us-east-1, On-Demand, 24/7)
 
@@ -169,8 +197,7 @@ Local state is used by default. Uncomment and configure the S3 backend in `versi
 
 ## Out of scope
 
-- CI/CD pipelines and image builds
 - Route 53 / custom DNS (point your domain at `alb_dns_name` manually)
 - RDS, EFS, WAF, Auto Scaling policies
-- SonarQube / Jenkins (use `deploy-vm` for persistent VMs)
-- Automated `terraform apply` from CI
+- SonarQube / Jenkins install (use `deploy-vm` + `install-*` for persistent VMs)
+- Automated `terraform apply` from CI (image rollouts use `ecs update-service`, not Terraform)

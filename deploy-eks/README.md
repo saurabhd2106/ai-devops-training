@@ -6,15 +6,16 @@ Provisions a development-sized **Amazon EKS** cluster with a dedicated multi-AZ 
 
 - Dedicated VPC (`10.20.0.0/16` by default) with **2 public + 2 private** subnets across 2 AZs
 - Internet Gateway + **1 NAT Gateway** (dev cost control; private nodes egress via NAT)
-- EKS control plane on private subnets; public API endpoint restricted to `allowed_api_cidr`
+- EKS control plane on private subnets; public API endpoint restricted to `allowed_api_cidr` (+ optional `additional_api_cidrs`)
 - One managed node group (`t3.medium` x2 by default) in private subnets
 - Encrypted gp3 root volumes, IMDSv2 required, KMS encryption for Kubernetes secrets
 - Cluster upgrade policy: **STANDARD** support (avoids extended-support surcharge)
 - Access mode: **API** with bootstrap cluster-creator admin permissions (no `aws-auth` ConfigMap)
+- Optional Jenkins CI: `ci_principal_arn` access entry + `ci_deploy` IAM policy for kubectl from `deploy-vm`
 
 ```
-                    ┌─ allowed_api_cidr ─┐
-kubectl / AWS CLI ──► EKS public API ────► Control plane
+                    ┌─ allowed_api_cidr (+ additional) ─┐
+kubectl / Jenkins ──► EKS public API ────► Control plane
                                               │
 VPC 10.20.0.0/16                              ▼
   public AZ-a / AZ-b  (ELB tags)         private AZ-a / AZ-b
@@ -23,7 +24,7 @@ VPC 10.20.0.0/16                              ▼
                             managed nodes (t3.medium)
 ```
 
-Terraform does **not** deploy application workloads, Ingress Controllers, or Cluster Autoscaler — only the cluster and network.
+Terraform does **not** deploy application workloads, Ingress Controllers, or Cluster Autoscaler — only the cluster, network, and optional CI access wiring. Workloads are applied by [`sample-java-app/Jenkinsfile.eks`](../sample-java-app/Jenkinsfile.eks).
 
 ## Prerequisites
 
@@ -76,6 +77,27 @@ node_disk_size      = 30
 cluster_version     = "1.34"
 ```
 
+### Wire Jenkins for kubectl deploy
+
+After [`deploy-vm`](../deploy-vm) exists:
+
+```bash
+# 1. Grant the instance role EKS cluster admin + allow Jenkins public IP on the API
+terraform -chdir=../deploy-vm output -raw instance_role_arn
+terraform -chdir=../deploy-vm output -json public_ips
+# Set in terraform.tfvars:
+#   ci_principal_arn     = "<instance_role_arn>"
+#   additional_api_cidrs = ["<jenkins-public-ip>/32"]
+terraform apply
+
+# 2. Attach the CI IAM policy on deploy-vm
+terraform output -raw ci_deploy_policy_arn
+# Set eks_deploy_policy_arn in ../deploy-vm/terraform.tfvars, then:
+terraform -chdir=../deploy-vm apply
+```
+
+Then create a Jenkins job with Script Path `sample-java-app/Jenkinsfile.eks`.
+
 ## Destroy
 
 ```bash
@@ -89,6 +111,8 @@ Destroy also takes ~10–15 minutes (node group, then cluster, then VPC/NAT).
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
 | `allowed_api_cidr` | **yes** | — | CIDR for EKS public API (`/32` recommended). `0.0.0.0/0` rejected. |
+| `additional_api_cidrs` | no | `[]` | Extra API CIDRs (e.g. Jenkins public IP `/32`). `0.0.0.0/0` rejected. |
+| `ci_principal_arn` | no | `null` | IAM role ARN for EKS access entry (Jenkins instance role from `deploy-vm`) |
 | `aws_region` | no | `us-east-1` | AWS region |
 | `project_name` | no | `deploy-eks` | Tag / name prefix |
 | `environment` | no | `development` | `development` \| `staging` \| `production` \| `testing` |
@@ -105,13 +129,14 @@ Destroy also takes ~10–15 minutes (node group, then cluster, then VPC/NAT).
 
 ## Security defaults
 
-- Public API endpoint restricted to `allowed_api_cidr` (not open to the world)
+- Public API endpoint restricted to `allowed_api_cidr` and optional `additional_api_cidrs` (not open to the world)
 - Private endpoint enabled; worker nodes use private subnets only
 - Kubernetes secrets encrypted with a dedicated KMS key (rotation enabled)
 - Node EBS: **gp3**, **encrypted**, delete on termination
 - **IMDSv2 required**, hop limit `1`
 - Node IAM: `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, `AmazonEC2ContainerRegistryPullOnly`, `AmazonSSMManagedInstanceCore`
 - Upgrade policy: **STANDARD** (no extended-support billing)
+- Optional CI: EKS access entry (`AmazonEKSClusterAdminPolicy`) + scoped `ci_deploy` IAM policy
 
 ## Estimated monthly cost (us-east-1, On-Demand, 24/7)
 
@@ -143,6 +168,6 @@ Local state is used by default. Uncomment and configure the S3 backend in `versi
 - IRSA / OIDC provider
 - VPC CNI / CoreDNS / kube-proxy / EBS CSI addon customization
 - AWS Load Balancer Controller, Cluster Autoscaler
-- Sample application deployment
+- Sample application Deployment/Service (applied by Jenkins via [`Jenkinsfile.eks`](../sample-java-app/Jenkinsfile.eks))
 - Multi-NAT / production HA networking
 - Automated `terraform apply` from CI

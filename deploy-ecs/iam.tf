@@ -57,3 +57,60 @@ resource "aws_iam_role_policy" "task_ecs_exec" {
   role        = aws_iam_role.task.id
   policy      = data.aws_iam_policy_document.task_ecs_exec.json
 }
+
+# CI deploy policy: attach to Jenkins/EC2 role via deploy-vm ecs_deploy_policy_arn
+data "aws_iam_policy_document" "ci_deploy" {
+  statement {
+    sid    = "ECSDescribe"
+    effect = "Allow"
+    actions = [
+      "ecs:DescribeClusters",
+      "ecs:DescribeServices",
+      "ecs:DescribeTaskDefinition",
+      "ecs:DescribeTasks",
+      "ecs:ListTaskDefinitions",
+      "ecs:ListTasks",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ECSRegisterTaskDefinition"
+    effect = "Allow"
+    actions = [
+      "ecs:RegisterTaskDefinition",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ECSUpdateService"
+    effect = "Allow"
+    actions = [
+      "ecs:UpdateService",
+    ]
+    resources = [for svc in aws_ecs_service.service : svc.id]
+  }
+
+  statement {
+    sid    = "PassECSRoles"
+    effect = "Allow"
+    actions = [
+      "iam:PassRole",
+    ]
+    resources = [
+      aws_iam_role.execution.arn,
+      aws_iam_role.task.arn,
+    ]
+  }
+}
+
+resource "aws_iam_policy" "ci_deploy" {
+  name        = "${local.name_prefix}-ci-deploy"
+  description = "Allow CI (Jenkins) to register task definitions and update ${local.name_prefix} ECS services"
+  policy      = data.aws_iam_policy_document.ci_deploy.json
+
+  tags = {
+    Name = "${local.name_prefix}-ci-deploy"
+  }
+}

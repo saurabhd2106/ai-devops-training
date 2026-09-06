@@ -8,6 +8,8 @@ project_name = "deploy-ecs"
 environment  = "development"
 
 # Map of ECS Fargate services. Set enabled = false to skip a service.
+# Default nginx demo (port 80). For sample-java-app / Jenkinsfile.ecs, use the
+# Java settings below instead (container_port 8080, health_check_path /health).
 services = {
   app = {
     image             = "public.ecr.aws/docker/library/nginx:stable"
@@ -21,6 +23,18 @@ services = {
     health_check_path = "/"
     # enabled         = true
   }
+  # Java Spring Boot (sonarqube-java-demo) — use with Jenkinsfile.ecs:
+  # app = {
+  #   image             = "ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/deploy-ecr/sonarqube-java-demo:latest"
+  #   cpu               = 512
+  #   memory            = 1024
+  #   container_port    = 8080
+  #   desired_count     = 1
+  #   path_pattern      = "/*"
+  #   listener_priority = 100
+  #   create_ecr        = false
+  #   health_check_path = "/health"
+  # }
   # Example second service (path-based routing on the same ALB):
   # api = {
   #   image             = "public.ecr.aws/docker/library/httpd:2.4"

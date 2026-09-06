@@ -21,6 +21,11 @@ public class UserController {
         this.userRepository = userRepository;
     }
 
+    @GetMapping("/health")
+    public String health() {
+        return "ok";
+    }
+
     @GetMapping("/users/{id}/email")
     public String getUpperEmail(@PathVariable String id) {
         return userService.getUppercaseEmailById(id);

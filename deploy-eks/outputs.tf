@@ -58,3 +58,13 @@ output "kubeconfig_command" {
   description = "Configure kubectl for this cluster"
   value       = "aws eks update-kubeconfig --name ${aws_eks_cluster.main.name} --region ${var.aws_region}"
 }
+
+output "ci_deploy_policy_arn" {
+  description = "IAM policy ARN to attach to Jenkins/CI (deploy-vm eks_deploy_policy_arn) for EKS kubectl deploy"
+  value       = aws_iam_policy.ci_deploy.arn
+}
+
+output "ci_access_entry_principal_arn" {
+  description = "IAM principal ARN granted EKS access entry (null when ci_principal_arn is unset)"
+  value       = var.ci_principal_arn
+}

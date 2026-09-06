@@ -28,6 +28,11 @@ output "alb_arn" {
   value       = aws_lb.main.arn
 }
 
+output "ci_deploy_policy_arn" {
+  description = "IAM policy ARN to attach to Jenkins/CI (deploy-vm ecs_deploy_policy_arn) for ECS deploy"
+  value       = aws_iam_policy.ci_deploy.arn
+}
+
 output "ecs_cluster_name" {
   description = "Name of the ECS cluster"
   value       = aws_ecs_cluster.main.name

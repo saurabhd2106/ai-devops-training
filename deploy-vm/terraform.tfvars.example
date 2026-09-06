@@ -42,3 +42,11 @@ ssh_public_key = "ssh-ed25519 AAAA... your-comment"
 # After apply in ../deploy-ecr, attach ECR push/pull so Jenkins can publish images:
 #   terraform -chdir=../deploy-ecr output -raw push_pull_policy_arn
 # ecr_push_pull_policy_arn = "arn:aws:iam::ACCOUNT:policy/deploy-ecr-ecr-push-pull-development"
+#
+# After apply in ../deploy-ecs, attach CI deploy so Jenkins can update ECS services:
+#   terraform -chdir=../deploy-ecs output -raw ci_deploy_policy_arn
+# ecs_deploy_policy_arn = "arn:aws:iam::ACCOUNT:policy/deploy-ecs-development-ci-deploy"
+#
+# After apply in ../deploy-eks (with ci_principal_arn + additional_api_cidrs), attach CI deploy for kubectl:
+#   terraform -chdir=../deploy-eks output -raw ci_deploy_policy_arn
+# eks_deploy_policy_arn = "arn:aws:iam::ACCOUNT:policy/deploy-eks-development-ci-deploy"

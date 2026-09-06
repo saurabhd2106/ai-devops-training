@@ -1,0 +1,277 @@
+// Declarative CI/CD for sonarqube-java-demo: build, test, Sonar, ECR, ECS.
+// Jenkins job Script Path: sample-java-app/Jenkinsfile.ecs
+// (or Jenkinsfile.ecs if the job roots at sample-java-app)
+//
+// Prerequisites:
+//   - SONAR_HOST_URL Jenkins env var; credential ID sonarqube-token
+//   - Docker, aws CLI, python3 on the agent
+//   - deploy-vm instance role: ecr_push_pull_policy_arn + ecs_deploy_policy_arn
+//   - ECS service configured for container_port 8080 and health_check_path /health
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    parameters {
+        string(
+            name: 'AWS_REGION',
+            defaultValue: 'us-east-1',
+            description: 'AWS region for ECR and ECS'
+        )
+        string(
+            name: 'ECR_REPOSITORY',
+            defaultValue: 'deploy-ecr/sonarqube-java-demo',
+            description: 'ECR repository name (e.g. deploy-ecr/sonarqube-java-demo)'
+        )
+        string(
+            name: 'ECS_CLUSTER',
+            defaultValue: 'deploy-ecs-development-cluster',
+            description: 'ECS cluster name (terraform -chdir=deploy-ecs output -raw ecs_cluster_name)'
+        )
+        string(
+            name: 'ECS_SERVICE',
+            defaultValue: 'app',
+            description: 'ECS service name'
+        )
+        string(
+            name: 'ECS_TASK_FAMILY',
+            defaultValue: 'deploy-ecs-development-app',
+            description: 'ECS task definition family'
+        )
+        string(
+            name: 'ECS_CONTAINER_NAME',
+            defaultValue: 'app',
+            description: 'Container name in the task definition to update'
+        )
+    }
+
+    environment {
+        MAVEN_IMAGE = 'maven:3.9-eclipse-temurin-26'
+        IMAGE_NAME = 'sonarqube-java-demo'
+        JAR_NAME = 'sonarqube-java-demo-0.0.1-SNAPSHOT.jar'
+        SONAR_TOKEN = credentials('sonarqube-token')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    if (fileExists('pom.xml')) {
+                        env.APP_DIR = '.'
+                    } else if (fileExists('sample-java-app/pom.xml')) {
+                        env.APP_DIR = 'sample-java-app'
+                    } else {
+                        error 'Could not find pom.xml (expected sample-java-app or job rooted at that folder)'
+                    }
+                    echo "Using application directory: ${env.APP_DIR}"
+                }
+                sh '''
+                    command -v docker >/dev/null || { echo "docker not found on PATH"; exit 1; }
+                    command -v aws >/dev/null || { echo "aws CLI not found on PATH"; exit 1; }
+                    command -v python3 >/dev/null || { echo "python3 not found on PATH"; exit 1; }
+                    docker --version
+                    aws --version
+                    python3 --version
+                '''
+            }
+        }
+
+        stage('Build') {
+            steps {
+                dir("${APP_DIR}") {
+                    sh '''
+                        docker run --rm \
+                          -v "$PWD":/workspace \
+                          -v "$HOME/.m2":/root/.m2 \
+                          -w /workspace \
+                          "$MAVEN_IMAGE" \
+                          mvn -B -DskipTests package
+                    '''
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                dir("${APP_DIR}") {
+                    sh '''
+                        docker run --rm \
+                          -v "$PWD":/workspace \
+                          -v "$HOME/.m2":/root/.m2 \
+                          -w /workspace \
+                          "$MAVEN_IMAGE" \
+                          mvn -B test jacoco:report
+                    '''
+                }
+            }
+            post {
+                always {
+                    dir("${APP_DIR}") {
+                        junit allowEmptyResults: true, testResults: 'target/surefire-reports/*.xml'
+                        archiveArtifacts artifacts: 'target/surefire-reports/**', allowEmptyArchive: true
+                        archiveArtifacts artifacts: 'target/site/jacoco/**', allowEmptyArchive: true
+                    }
+                }
+            }
+        }
+
+        stage('SonarQube') {
+            steps {
+                dir("${APP_DIR}") {
+                    script {
+                        if (!env.SONAR_HOST_URL?.trim()) {
+                            error 'SONAR_HOST_URL must be set as a Jenkins environment variable'
+                        }
+                    }
+                    sh '''
+                        docker run --rm \
+                          --network host \
+                          -v "$PWD":/workspace \
+                          -v "$HOME/.m2":/root/.m2 \
+                          -e SONAR_HOST_URL \
+                          -e SONAR_TOKEN \
+                          -w /workspace \
+                          "$MAVEN_IMAGE" \
+                          mvn -B sonar:sonar
+                    '''
+                }
+            }
+        }
+
+        stage('Publish ECR') {
+            steps {
+                dir("${APP_DIR}") {
+                    script {
+                        def region = params.AWS_REGION.trim()
+                        def repo = params.ECR_REPOSITORY.trim()
+                        def accountId = sh(
+                            script: 'aws sts get-caller-identity --query Account --output text',
+                            returnStdout: true
+                        ).trim()
+                        def registry = "${accountId}.dkr.ecr.${region}.amazonaws.com"
+                        def imageTag = "${registry}/${repo}:${env.BUILD_NUMBER}"
+                        def imageLatest = "${registry}/${repo}:latest"
+
+                        env.DEPLOY_IMAGE = imageTag
+                        env.DEPLOY_IMAGE_LATEST = imageLatest
+
+                        sh """
+                            test -f target/${JAR_NAME}
+                            docker build -t ${IMAGE_NAME}:${env.BUILD_NUMBER} -t ${IMAGE_NAME}:latest .
+                            docker tag ${IMAGE_NAME}:${env.BUILD_NUMBER} ${imageTag}
+                            docker tag ${IMAGE_NAME}:latest ${imageLatest}
+                            aws ecr get-login-password --region ${region} | \
+                              docker login --username AWS --password-stdin ${registry}
+                            docker push ${imageTag}
+                            docker push ${imageLatest}
+                        """
+
+                        echo "Published ${imageTag} and ${imageLatest}"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy ECS') {
+            steps {
+                script {
+                    def region = params.AWS_REGION.trim()
+                    def cluster = params.ECS_CLUSTER.trim()
+                    def service = params.ECS_SERVICE.trim()
+                    def family = params.ECS_TASK_FAMILY.trim()
+                    def containerName = params.ECS_CONTAINER_NAME.trim()
+                    def image = env.DEPLOY_IMAGE
+
+                    if (!image?.trim()) {
+                        error 'DEPLOY_IMAGE was not set by Publish ECR stage'
+                    }
+
+                    withEnv([
+                        "AWS_DEFAULT_REGION=${region}",
+                        "ECS_CLUSTER=${cluster}",
+                        "ECS_SERVICE=${service}",
+                        "ECS_TASK_FAMILY=${family}",
+                        "ECS_CONTAINER_NAME=${containerName}",
+                        "DEPLOY_IMAGE=${image}",
+                    ]) {
+                        sh '''
+                            set -euo pipefail
+
+                            aws sts get-caller-identity
+                            aws ecs describe-clusters --clusters "${ECS_CLUSTER}" \
+                              --query 'clusters[0].status' --output text | grep -qx ACTIVE
+
+                            CURRENT_TD=$(aws ecs describe-task-definition \
+                              --task-definition "${ECS_TASK_FAMILY}" \
+                              --query 'taskDefinition' --output json)
+
+                            NEW_TD=$(python3 -c '
+import json, os, sys
+
+td = json.loads(sys.stdin.read())
+container = os.environ["ECS_CONTAINER_NAME"]
+image = os.environ["DEPLOY_IMAGE"]
+
+found = False
+for c in td.get("containerDefinitions", []):
+    if c.get("name") == container:
+        c["image"] = image
+        found = True
+        break
+if not found:
+    raise SystemExit(f"container {container!r} not found in task definition")
+
+for key in (
+    "taskDefinitionArn",
+    "revision",
+    "status",
+    "requiresAttributes",
+    "compatibilities",
+    "registeredAt",
+    "registeredBy",
+    "deregisteredAt",
+):
+    td.pop(key, None)
+
+print(json.dumps(td))
+' <<< "${CURRENT_TD}")
+
+                            echo "${NEW_TD}" > /tmp/ecs-task-def.json
+
+                            NEW_REVISION=$(aws ecs register-task-definition \
+                              --cli-input-json file:///tmp/ecs-task-def.json \
+                              --query 'taskDefinition.revision' --output text)
+
+                            echo "Registered ${ECS_TASK_FAMILY}:${NEW_REVISION} with image ${DEPLOY_IMAGE}"
+
+                            aws ecs update-service \
+                              --cluster "${ECS_CLUSTER}" \
+                              --service "${ECS_SERVICE}" \
+                              --task-definition "${ECS_TASK_FAMILY}:${NEW_REVISION}" \
+                              --force-new-deployment
+
+                            echo "Waiting for service to become stable..."
+                            aws ecs wait services-stable \
+                              --cluster "${ECS_CLUSTER}" \
+                              --services "${ECS_SERVICE}"
+
+                            echo "Deployed ${ECS_SERVICE} on ${ECS_CLUSTER} using ${ECS_TASK_FAMILY}:${NEW_REVISION}"
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs(deleteDirs: true, notFailBuild: true)
+        }
+    }
+}

@@ -121,6 +121,18 @@ variable "ecr_push_pull_policy_arn" {
   default     = null
 }
 
+variable "ecs_deploy_policy_arn" {
+  description = "Optional IAM policy ARN from deploy-ecs (ci_deploy_policy_arn) so Jenkins/EC2 can register task defs and update ECS services"
+  type        = string
+  default     = null
+}
+
+variable "eks_deploy_policy_arn" {
+  description = "Optional IAM policy ARN from deploy-eks (ci_deploy_policy_arn) so Jenkins/EC2 can call eks update-kubeconfig and the Kubernetes API"
+  type        = string
+  default     = null
+}
+
 locals {
   vms = {
     for name, cfg in var.vms : name => cfg if cfg.enabled
