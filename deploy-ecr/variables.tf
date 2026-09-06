@@ -36,6 +36,12 @@ variable "repositories" {
       scan_on_push    = true
       max_image_count = 10
     }
+    sonarqube-java-demo = {
+      enabled         = true
+      mutable         = true
+      scan_on_push    = true
+      max_image_count = 10
+    }
   }
 
   validation {

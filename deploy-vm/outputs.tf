@@ -70,3 +70,13 @@ output "ci_artifacts_bucket_arn" {
   description = "ARN of the CI artefacts S3 bucket"
   value       = aws_s3_bucket.ci_artifacts.arn
 }
+
+output "instance_role_name" {
+  description = "Shared EC2 instance IAM role name (Jenkins, SonarQube, app)"
+  value       = aws_iam_role.instance.name
+}
+
+output "instance_role_arn" {
+  description = "Shared EC2 instance IAM role ARN"
+  value       = aws_iam_role.instance.arn
+}

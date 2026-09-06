@@ -115,6 +115,12 @@ variable "enable_detailed_monitoring" {
   default     = false
 }
 
+variable "ecr_push_pull_policy_arn" {
+  description = "Optional IAM policy ARN from deploy-ecr (push_pull_policy_arn) so Jenkins/EC2 can push and pull images"
+  type        = string
+  default     = null
+}
+
 locals {
   vms = {
     for name, cfg in var.vms : name => cfg if cfg.enabled

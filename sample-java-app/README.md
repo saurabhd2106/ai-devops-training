@@ -99,11 +99,12 @@ You can also set this on a folder or individual job instead of globally.
 #### Pipeline job
 
 1. **New Item** → name `sample-java-app` → **Pipeline** → **OK**
-2. Check **This project is parameterized** after the first run (the Jenkinsfile defines `S3_BUCKET`).
+2. Check **This project is parameterized** after the first run (the Jenkinsfile defines `S3_BUCKET` and `AWS_REGION`).
 3. Pipeline → **Pipeline script from SCM** → your Git repo
 4. Script Path: `sample-java-app/Jenkinsfile` (monorepo) or `Jenkinsfile` (app-only checkout)
 5. **Save**, then **Build with Parameters**:
    - `S3_BUCKET` = `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`
+   - `AWS_REGION` = `us-east-1` (or your `deploy-vm` region)
 
 ## Jenkins CI pipeline
 
@@ -111,11 +112,14 @@ Declarative pipeline: [`Jenkinsfile`](Jenkinsfile).
 
 | Stage | What it does |
 |-------|----------------|
-| Checkout | SCM checkout; resolves `sample-java-app/` vs app-only root |
+| Checkout | SCM checkout; resolves `sample-java-app/` vs app-only root; fails early if `mvn` or `aws` is missing |
 | Build | `mvn -B -DskipTests compile` |
 | Test | `mvn -B test` + JUnit report publish (Surefire ignores failures for training) |
-| SonarQube Scan | `mvn package` then `sonar-scanner` (no quality-gate wait) |
-| Publish artefacts | Jenkins `archiveArtifacts` + upload JAR/reports to S3 |
+| Package | `mvn -B -DskipTests package` (fat JAR for S3) |
+| SonarQube Scan | `sonar-scanner` only; marked **UNSTABLE** on failure so S3 publish still runs |
+| Publish artefacts | Jenkins `archiveArtifacts`, STS preflight, upload JAR/reports to S3, list destination prefix |
+
+Use the **`deploy-vm`** output `ci_artifacts_bucket` (instance role already has `s3:PutObject`). Do not point this job at a [`deploy-s3`](../deploy-s3) bucket unless that role is granted access.
 
 ### Prerequisites (lab)
 

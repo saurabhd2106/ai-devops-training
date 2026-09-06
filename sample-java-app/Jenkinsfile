@@ -5,7 +5,12 @@ pipeline {
         string(
             name: 'S3_BUCKET',
             defaultValue: '',
-            description: 'CI artifacts S3 bucket name from terraform output ci_artifacts_bucket'
+            description: 'CI artifacts S3 bucket name from terraform output ci_artifacts_bucket (deploy-vm)'
+        )
+        string(
+            name: 'AWS_REGION',
+            defaultValue: 'us-east-1',
+            description: 'AWS region for S3 uploads'
         )
     }
 
@@ -13,6 +18,7 @@ pipeline {
         JAVA_HOME = '/usr/lib/jvm/java-26-amazon-corretto.x86_64'
         PATH = "/opt/maven/bin:/opt/sonar-scanner/bin:${env.JAVA_HOME}/bin:${env.PATH}"
         SONAR_TOKEN = credentials('sonarqube-token')
+        JAR_NAME = 'sonarqube-java-demo-0.0.1-SNAPSHOT.jar'
     }
 
     options {
@@ -34,6 +40,12 @@ pipeline {
                     }
                     echo "Using application directory: ${env.APP_DIR}"
                 }
+                sh '''
+                    command -v mvn >/dev/null || { echo "mvn not found on PATH (expected /opt/maven/bin from install-jenkins)"; exit 1; }
+                    command -v aws >/dev/null || { echo "aws CLI not found on PATH"; exit 1; }
+                    mvn -version
+                    aws --version
+                '''
             }
         }
 
@@ -60,20 +72,30 @@ pipeline {
             }
         }
 
-        stage('SonarQube Scan') {
+        stage('Package') {
             steps {
                 dir(env.APP_DIR) {
-                    script {
-                        if (!env.SONAR_HOST_URL?.trim()) {
-                            error('SONAR_HOST_URL must be set as a Jenkins environment variable')
+                    sh 'mvn -B -DskipTests package'
+                    sh "test -f target/${JAR_NAME}"
+                }
+            }
+        }
+
+        stage('SonarQube Scan') {
+            steps {
+                catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
+                    dir(env.APP_DIR) {
+                        script {
+                            if (!env.SONAR_HOST_URL?.trim()) {
+                                error('SONAR_HOST_URL must be set as a Jenkins environment variable')
+                            }
                         }
+                        sh '''
+                            sonar-scanner \
+                              -Dsonar.host.url="${SONAR_HOST_URL}" \
+                              -Dsonar.token="${SONAR_TOKEN}"
+                        '''
                     }
-                    sh '''
-                        mvn -B -DskipTests package
-                        sonar-scanner \
-                          -Dsonar.host.url="${SONAR_HOST_URL}" \
-                          -Dsonar.token="${SONAR_TOKEN}"
-                    '''
                 }
             }
         }
@@ -84,18 +106,27 @@ pipeline {
                     archiveArtifacts artifacts: 'target/sonarqube-java-demo-*.jar,target/surefire-reports/*.xml', fingerprint: true, allowEmptyArchive: false
                     script {
                         if (!params.S3_BUCKET?.trim()) {
-                            error('S3_BUCKET parameter is required (terraform output ci_artifacts_bucket)')
+                            error('S3_BUCKET parameter is required (terraform -chdir=deploy-vm output -raw ci_artifacts_bucket)')
                         }
-                        sh """
-                            aws s3 cp target/sonarqube-java-demo-0.0.1-SNAPSHOT.jar \
-                              "s3://${params.S3_BUCKET}/sample-java-app/${env.BUILD_NUMBER}/" \
-                              --only-show-errors
-                            if [ -d target/surefire-reports ]; then
-                              aws s3 cp target/surefire-reports/ \
-                                "s3://${params.S3_BUCKET}/sample-java-app/${env.BUILD_NUMBER}/surefire-reports/" \
-                                --recursive --only-show-errors
-                            fi
-                        """
+                        def bucket = params.S3_BUCKET.trim()
+                        def region = params.AWS_REGION.trim()
+                        def prefix = "sample-java-app/${env.BUILD_NUMBER}"
+                        withEnv(["AWS_DEFAULT_REGION=${region}", "S3_BUCKET=${bucket}", "S3_PREFIX=${prefix}"]) {
+                            sh '''
+                                command -v aws >/dev/null || { echo "aws CLI not found on PATH"; exit 1; }
+                                aws sts get-caller-identity
+                                test -f "target/${JAR_NAME}"
+                                aws s3 cp "target/${JAR_NAME}" \
+                                  "s3://${S3_BUCKET}/${S3_PREFIX}/" \
+                                  --only-show-errors
+                                if [ -d target/surefire-reports ]; then
+                                  aws s3 cp target/surefire-reports/ \
+                                    "s3://${S3_BUCKET}/${S3_PREFIX}/surefire-reports/" \
+                                    --recursive --only-show-errors
+                                fi
+                                aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/"
+                            '''
+                        }
                     }
                 }
             }

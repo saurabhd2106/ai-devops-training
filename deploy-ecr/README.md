@@ -5,12 +5,12 @@ Provisions private Amazon ECR repositories using the **HashiCorp AWS provider `~
 ## Architecture
 
 - One private ECR repository per entry in the `repositories` map
-- Repository name pattern: `{project_name}/{key}` (default `deploy-ecr/app`)
+- Repository name pattern: `{project_name}/{key}` (defaults: `deploy-ecr/app`, `deploy-ecr/sonarqube-java-demo`)
 - Basic image scanning on push (no Amazon Inspector enhanced scanning)
 - Encryption at rest: **AES256** (SSE-S3) by default; optional `KMS`
 - Lifecycle: expire untagged images after 7 days; keep last N tagged images
 - Same-account repository policy (no public or cross-account access)
-- Managed IAM policy you can attach later to Jenkins/CI/EC2 roles
+- Managed IAM push/pull policy; attach to Jenkins via [`deploy-vm`](../deploy-vm) `ecr_push_pull_policy_arn`
 
 Terraform does **not** build or push container images — only the registry resources.
 
@@ -72,12 +72,15 @@ aws ecr get-login-password --region us-east-1 | \
   docker login --username AWS --password-stdin <account>.dkr.ecr.us-east-1.amazonaws.com
 ```
 
-## Attach push/pull to CI (optional)
+## Attach push/pull to Jenkins (deploy-vm)
 
 ```bash
-terraform output push_pull_policy_arn
-# Attach that policy ARN to your Jenkins/EC2/CI IAM role (separate from this stack).
+terraform output -raw push_pull_policy_arn
+# Set that ARN as ecr_push_pull_policy_arn in ../deploy-vm/terraform.tfvars, then:
+terraform -chdir=../deploy-vm apply
 ```
+
+See [`deploy-vm` README](../deploy-vm/README.md#ecr-publish-jenkins).
 
 ## Destroy
 
@@ -94,7 +97,7 @@ With `force_delete = true` (default), repositories that still contain images are
 | `aws_region` | no | `us-east-1` | AWS region |
 | `project_name` | no | `deploy-ecr` | Tag / repo name prefix |
 | `environment` | no | `development` | `development` \| `staging` \| `production` \| `testing` |
-| `repositories` | no | `app` map | Per-repo `enabled`, `mutable`, `scan_on_push`, `max_image_count` |
+| `repositories` | no | `app` + `sonarqube-java-demo` map | Per-repo `enabled`, `mutable`, `scan_on_push`, `max_image_count` |
 | `encryption_type` | no | `AES256` | `AES256` or `KMS` |
 | `kms_key` | no | `null` | KMS key when using `KMS` (AWS-managed if null) |
 | `untagged_expiry_days` | no | `7` | Expire untagged images after N days |
@@ -135,6 +138,7 @@ Local state is used by default. Uncomment and configure the S3 backend in `versi
 ## Out of scope
 
 - Building or pushing application images
-- Attaching the IAM policy to deploy-vm Jenkins (attach the output ARN yourself)
 - ECS, EKS, Fargate, or VPC interface endpoints
 - Cross-account replication or ECR Public
+
+Attach the push/pull policy to Jenkins via [`deploy-vm`](../deploy-vm) `ecr_push_pull_policy_arn` (see above).

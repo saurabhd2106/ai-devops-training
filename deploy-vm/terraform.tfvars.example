@@ -38,3 +38,7 @@ ssh_public_key = "ssh-ed25519 AAAA... your-comment"
 # Optional
 # key_name                   = "deploy-vm-key"
 # enable_detailed_monitoring = false
+#
+# After apply in ../deploy-ecr, attach ECR push/pull so Jenkins can publish images:
+#   terraform -chdir=../deploy-ecr output -raw push_pull_policy_arn
+# ecr_push_pull_policy_arn = "arn:aws:iam::ACCOUNT:policy/deploy-ecr-ecr-push-pull-development"

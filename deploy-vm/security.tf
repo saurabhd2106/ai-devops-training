@@ -106,6 +106,13 @@ resource "aws_iam_role_policy_attachment" "ssm_core" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+resource "aws_iam_role_policy_attachment" "ecr_push_pull" {
+  count = var.ecr_push_pull_policy_arn != null ? 1 : 0
+
+  role       = aws_iam_role.instance.name
+  policy_arn = var.ecr_push_pull_policy_arn
+}
+
 resource "aws_iam_instance_profile" "instance" {
   name_prefix = "${var.project_name}-${var.environment}-"
   role        = aws_iam_role.instance.name

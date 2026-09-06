@@ -85,6 +85,18 @@ terraform output -raw ci_artifacts_bucket
 
 Use `private_ips.sonarqube` as the Jenkins environment variable `SONAR_HOST_URL` (`http://<ip>:9000`) and `ci_artifacts_bucket` as the Jenkins `S3_BUCKET` parameter for [`sample-java-app`](../sample-java-app).
 
+### ECR publish (Jenkins)
+
+After [`deploy-ecr`](../deploy-ecr) is applied, attach its push/pull policy to this stack’s instance role so Jenkins can log in and push images:
+
+```bash
+terraform -chdir=../deploy-ecr output -raw push_pull_policy_arn
+# Set ecr_push_pull_policy_arn in terraform.tfvars to that ARN, then:
+terraform apply
+```
+
+Confirm with `terraform output instance_role_name` / `instance_role_arn`.
+
 Example SSH (Amazon Linux 2023 user is `ec2-user`):
 
 ```bash
@@ -121,13 +133,14 @@ terraform destroy
 | `environment` | no | `development` | `development` \| `staging` \| `production` \| `testing` |
 | `key_name` | no | `deploy-vm-key` | Key pair name prefix |
 | `enable_detailed_monitoring` | no | `false` | 1-minute CloudWatch metrics (extra cost) |
+| `ecr_push_pull_policy_arn` | no | `null` | IAM policy ARN from `deploy-ecr` `push_pull_policy_arn` for Jenkins ECR push/pull |
 
 ## Security defaults
 
 - SSH and app/UI ports restricted to `allowed_ssh_cidr`
 - EBS root: **gp3**, **encrypted**, delete on termination
 - **IMDSv2 required**, hop limit `1`
-- Shared IAM with `AmazonSSMManagedInstanceCore`
+- Shared IAM with `AmazonSSMManagedInstanceCore` (and optional `ecr_push_pull_policy_arn` for ECR)
 - AMI pinned after first apply (`lifecycle.ignore_changes = [ami]`)
 
 ## Estimated monthly cost (us-east-1, On-Demand, 24/7)
