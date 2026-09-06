@@ -72,15 +72,14 @@ ansible-playbook site.yml -e jenkins_update_packages=true
 1. Open `http://<jenkins-public-ip>:8080` (from the CIDR allowed in `deploy-vm`).
 2. Paste the initial admin password printed by the playbook (or run `sudo cat /var/lib/jenkins/secrets/initialAdminPassword` on the host).
 3. Complete the Jenkins setup wizard (you can skip suggested plugins; pipeline plugins are already installed).
-4. Add AWS credentials, SonarQube details, and global tools (full click-path is in [`sample-java-app/README.md`](../sample-java-app/README.md#3-jenkins--credentials-tools-and-sonarqube-server)):
+4. Add AWS credentials, SonarQube details, and global tools (full click-path is in [`sample-java-app/README.md`](../sample-java-app/README.md#3-jenkins--credentials-tools-and-environment)):
 
    | Where | What to add |
    |-------|-------------|
    | **Manage Jenkins → Credentials** | Secret text ID **`sonarqube-token`** (token from SonarQube → My Account → Security). Optional: Kind **AWS Credentials**, ID **`aws-ci`**, if Jenkins is not using the `deploy-vm` instance profile. |
    | **Manage Jenkins → Tools** | JDK `jdk-26` → `/usr/lib/jvm/java-26-amazon-corretto.x86_64`. Maven `maven-3.9` → `/opt/maven`. SonarQube Scanner `sonar-scanner` → `/opt/sonar-scanner`. Uncheck **Install automatically**. |
-   | **Manage Jenkins → System → SonarQube servers** | Name **`sonarqube`**, URL `http://<sonarqube-private-ip>:9000`, token credential **`sonarqube-token`**. Required by `Jenkinsfile.sonarqube-java-demo`. |
+   | **Manage Jenkins → System → Global properties** | Environment variable **`SONAR_HOST_URL`** = `http://<sonarqube-private-ip>:9000` from `terraform -chdir=../deploy-vm output -json private_ips`. Required by both Jenkinsfiles. |
    | Job | **New Item** → Pipeline → **Pipeline script from SCM**, Script Path `sample-java-app/Jenkinsfile` |
-   | Parameter `SONAR_HOST_URL` | `http://<sonarqube-private-ip>:9000` from `terraform -chdir=../deploy-vm output -json private_ips` |
    | Parameter `S3_BUCKET` | `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket` |
 
 ## Variables

@@ -83,17 +83,12 @@ variable "public_subnet_cidr" {
 }
 
 variable "allowed_ssh_cidr" {
-  description = "CIDR allowed for SSH and role UI/app ports. Prefer your public IP as /32. Avoid 0.0.0.0/0."
+  description = "CIDR allowed for SSH and role UI/app ports. Use your public IP as /32, or 0.0.0.0/0 for open test access."
   type        = string
 
   validation {
     condition     = can(cidrhost(var.allowed_ssh_cidr, 0))
-    error_message = "allowed_ssh_cidr must be a valid CIDR block (e.g. 203.0.113.25/32)."
-  }
-
-  validation {
-    condition     = var.allowed_ssh_cidr != "0.0.0.0/0"
-    error_message = "allowed_ssh_cidr must not be 0.0.0.0/0. Restrict access to your public IP (/32) or a trusted network range."
+    error_message = "allowed_ssh_cidr must be a valid CIDR block (e.g. 203.0.113.25/32 or 0.0.0.0/0)."
   }
 }
 

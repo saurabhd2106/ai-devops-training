@@ -83,7 +83,7 @@ terraform output private_ips
 terraform output -raw ci_artifacts_bucket
 ```
 
-Use `private_ips.sonarqube` as `SONAR_HOST_URL` (`http://<ip>:9000`) and `ci_artifacts_bucket` as the Jenkins `S3_BUCKET` parameter for [`sample-java-app`](../sample-java-app).
+Use `private_ips.sonarqube` as the Jenkins environment variable `SONAR_HOST_URL` (`http://<ip>:9000`) and `ci_artifacts_bucket` as the Jenkins `S3_BUCKET` parameter for [`sample-java-app`](../sample-java-app).
 
 Example SSH (Amazon Linux 2023 user is `ec2-user`):
 
@@ -113,7 +113,7 @@ terraform destroy
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `allowed_ssh_cidr` | **yes** | — | CIDR for SSH + role ports (`/32` recommended). `0.0.0.0/0` rejected. |
+| `allowed_ssh_cidr` | **yes** | — | CIDR for SSH + role ports (`/32` recommended; `0.0.0.0/0` allowed for test access) |
 | `ssh_public_key` | **yes** | — | OpenSSH public key material |
 | `vms` | no | app / sonarqube / jenkins map | Per-VM `instance_type`, `root_volume_size`, `ingress_ports`, `enabled` |
 | `aws_region` | no | `us-east-1` | AWS region |

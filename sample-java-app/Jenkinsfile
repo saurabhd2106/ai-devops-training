@@ -3,11 +3,6 @@ pipeline {
 
     parameters {
         string(
-            name: 'SONAR_HOST_URL',
-            defaultValue: 'http://localhost:9000',
-            description: 'SonarQube base URL (use the SonarQube private IP from terraform output private_ips, e.g. http://10.0.1.x:9000)'
-        )
-        string(
             name: 'S3_BUCKET',
             defaultValue: '',
             description: 'CI artifacts S3 bucket name from terraform output ci_artifacts_bucket'
@@ -68,14 +63,17 @@ pipeline {
         stage('SonarQube Scan') {
             steps {
                 dir(env.APP_DIR) {
-                    withEnv(["SONAR_HOST_URL=${params.SONAR_HOST_URL}"]) {
-                        sh '''
-                            mvn -B -DskipTests package
-                            sonar-scanner \
-                              -Dsonar.host.url="${SONAR_HOST_URL}" \
-                              -Dsonar.token="${SONAR_TOKEN}"
-                        '''
+                    script {
+                        if (!env.SONAR_HOST_URL?.trim()) {
+                            error('SONAR_HOST_URL must be set as a Jenkins environment variable')
+                        }
                     }
+                    sh '''
+                        mvn -B -DskipTests package
+                        sonar-scanner \
+                          -Dsonar.host.url="${SONAR_HOST_URL}" \
+                          -Dsonar.token="${SONAR_TOKEN}"
+                    '''
                 }
             }
         }

@@ -22,7 +22,7 @@ terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket
 | Value | Where to use it |
 |-------|-----------------|
 | SonarQube **public** IP `:9000` | Browser, GitLab `SONAR_HOST_URL` (shared GitLab.com runners) |
-| SonarQube **private** IP `:9000` | Jenkins `SONAR_HOST_URL` and Jenkins SonarQube server URL |
+| SonarQube **private** IP `:9000` | Jenkins environment variable `SONAR_HOST_URL` |
 | `ci_artifacts_bucket` | Jenkins job parameter `S3_BUCKET` |
 
 ### 1. Create a SonarQube token
@@ -50,7 +50,7 @@ IAM user or role used by GitLab needs `s3:ListBucket`, `s3:GetObject`, and `s3:P
 
 If this repo is the workspace root, set **Settings → CI/CD → General pipelines → CI/CD configuration file** to `sample-java-app/.gitlab-ci.yml`.
 
-### 3. Jenkins — credentials, tools, and SonarQube server
+### 3. Jenkins — credentials, tools, and environment
 
 Open `http://<jenkins-public-ip>:8080`.
 
@@ -86,25 +86,23 @@ Click **Save** at the bottom.
 
 The default [`Jenkinsfile`](Jenkinsfile) uses `PATH` (`/opt/maven/bin`, `/opt/sonar-scanner/bin`) rather than `tool` steps. Configuring Tools still lets you select them in freestyle jobs and in [`Jenkinsfile.sonarqube-java-demo`](Jenkinsfile.sonarqube-java-demo) if you switch to `tool` bindings.
 
-#### SonarQube server (Manage Jenkins → System → SonarQube servers)
+#### Environment variable (Manage Jenkins → System → Global properties)
 
-Required by [`Jenkinsfile.sonarqube-java-demo`](Jenkinsfile.sonarqube-java-demo) (`withSonarQubeEnv('sonarqube')`).
+Both Jenkinsfiles read `SONAR_HOST_URL` from the Jenkins environment (not a job parameter).
 
-1. Check **Environment variables** if shown.
-2. **Add SonarQube**
-3. Name: `sonarqube` (must match exactly)
-4. Server URL: `http://<sonarqube-private-ip>:9000`
-5. Server authentication token: credential **`sonarqube-token`**
-6. **Save**
+1. Check **Environment variables**
+2. **Add** → Name: `SONAR_HOST_URL`, Value: `http://<sonarqube-private-ip>:9000`
+3. **Save**
+
+You can also set this on a folder or individual job instead of globally.
 
 #### Pipeline job
 
 1. **New Item** → name `sample-java-app` → **Pipeline** → **OK**
-2. Check **This project is parameterized** after the first run (the Jenkinsfile defines `SONAR_HOST_URL` and `S3_BUCKET`).
+2. Check **This project is parameterized** after the first run (the Jenkinsfile defines `S3_BUCKET`).
 3. Pipeline → **Pipeline script from SCM** → your Git repo
 4. Script Path: `sample-java-app/Jenkinsfile` (monorepo) or `Jenkinsfile` (app-only checkout)
 5. **Save**, then **Build with Parameters**:
-   - `SONAR_HOST_URL` = `http://<sonarqube-private-ip>:9000`
    - `S3_BUCKET` = `terraform -chdir=../deploy-vm output -raw ci_artifacts_bucket`
 
 ## Jenkins CI pipeline

@@ -21,11 +21,6 @@ pipeline {
             defaultValue: 'deploy-ecr/sonarqube-java-demo',
             description: 'ECR repository name (e.g. deploy-ecr/sonarqube-java-demo)'
         )
-        string(
-            name: 'SONAR_HOST_URL',
-            defaultValue: '',
-            description: 'SonarQube base URL (e.g. http://<sonarqube-private-ip>:9000). Required.'
-        )
     }
 
     environment {
@@ -94,23 +89,21 @@ pipeline {
             steps {
                 dir("${APP_DIR}") {
                     script {
-                        if (!params.SONAR_HOST_URL?.trim()) {
-                            error 'SONAR_HOST_URL is required (e.g. http://<sonarqube-private-ip>:9000)'
-                        }
-                        withEnv(["SONAR_HOST_URL=${params.SONAR_HOST_URL.trim()}"]) {
-                            sh '''
-                                docker run --rm \
-                                  --network host \
-                                  -v "$PWD":/workspace \
-                                  -v "$HOME/.m2":/root/.m2 \
-                                  -e SONAR_HOST_URL \
-                                  -e SONAR_TOKEN \
-                                  -w /workspace \
-                                  "$MAVEN_IMAGE" \
-                                  mvn -B sonar:sonar
-                            '''
+                        if (!env.SONAR_HOST_URL?.trim()) {
+                            error 'SONAR_HOST_URL must be set as a Jenkins environment variable'
                         }
                     }
+                    sh '''
+                        docker run --rm \
+                          --network host \
+                          -v "$PWD":/workspace \
+                          -v "$HOME/.m2":/root/.m2 \
+                          -e SONAR_HOST_URL \
+                          -e SONAR_TOKEN \
+                          -w /workspace \
+                          "$MAVEN_IMAGE" \
+                          mvn -B sonar:sonar
+                    '''
                 }
             }
         }
